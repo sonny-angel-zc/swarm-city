@@ -26,7 +26,12 @@ export type Agent = {
   progress: number;    // 0-1
   log: LogEntry[];
   building: BuildingConfig;
+  contextUsed: number;    // 0-1, how full the context window is
+  contextMax: number;     // max context tokens (visual only)
+  contextWarning: boolean; // true when contextUsed > 0.9
 };
+
+export type OverlayMode = 'activity' | 'power' | 'economy';
 
 export type LogEntry = {
   timestamp: number;

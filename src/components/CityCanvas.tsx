@@ -4,20 +4,43 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useSwarmStore } from '@/core/store';
 import {
   TILE_WIDTH, TILE_HEIGHT, GRID_SIZE, BUILDING_CONFIGS,
-  AgentRole, AgentStatus, BuildingConfig,
+  AgentRole, AgentStatus, BuildingConfig, OverlayMode,
 } from '@/core/types';
 import { gridToScreen, drawIsoBox } from '@/core/isometric';
 
-// Road layout
+// ─── Lighting ────────────────────────────────────────────────────────────────
+
+/** Darkness 0 = full day, 1 = full night. Based on real system clock. */
+function getDarkness(hour: number): number {
+  if (hour >= 7 && hour < 18) return 0;
+  if (hour >= 5 && hour < 7) return 1 - (hour - 5) / 2;
+  if (hour >= 18 && hour < 20) return (hour - 18) / 2;
+  return 1;
+}
+
+/** Ambient tint RGB for sky / overlay by time of day. */
+function getAmbientColor(hour: number): { r: number; g: number; b: number } {
+  if (hour >= 7 && hour < 18) return { r: 180, g: 200, b: 230 }; // cool daylight
+  if (hour >= 5 && hour < 7) {
+    const t = (hour - 5) / 2;
+    return { r: Math.round(80 + 100 * t), g: Math.round(50 + 150 * t), b: Math.round(120 + 110 * t) };
+  }
+  if (hour >= 18 && hour < 20) {
+    const t = (hour - 18) / 2;
+    return { r: Math.round(180 - 160 * t), g: Math.round(120 - 90 * t), b: Math.round(160 - 100 * t) };
+  }
+  return { r: 10, g: 15, b: 40 };
+}
+
+// ─── Road layout ─────────────────────────────────────────────────────────────
+
 const ROAD_TILES = new Set<string>();
-// Main arteries
 for (let i = 0; i < GRID_SIZE; i++) {
   ROAD_TILES.add(`7,${i}`);
   ROAD_TILES.add(`8,${i}`);
   ROAD_TILES.add(`${i},7`);
   ROAD_TILES.add(`${i},8`);
 }
-// Side streets
 for (let i = 2; i < 13; i++) {
   ROAD_TILES.add(`${i},3`);
   ROAD_TILES.add(`${i},4`);
@@ -29,7 +52,23 @@ for (let i = 2; i < 13; i++) {
   ROAD_TILES.add(`12,${i}`);
 }
 
-// Decorative buildings (small filler)
+// ─── Power grid edges (building-to-building along roads) ─────────────────────
+
+type PowerEdge = { from: AgentRole; to: AgentRole };
+const POWER_EDGES: PowerEdge[] = [
+  { from: 'pm', to: 'engineer' },
+  { from: 'pm', to: 'designer' },
+  { from: 'pm', to: 'qa' },
+  { from: 'pm', to: 'devils_advocate' },
+  { from: 'pm', to: 'reviewer' },
+  { from: 'pm', to: 'researcher' },
+  { from: 'engineer', to: 'qa' },
+  { from: 'designer', to: 'reviewer' },
+  { from: 'researcher', to: 'reviewer' },
+];
+
+// ─── Decorative buildings ────────────────────────────────────────────────────
+
 const DECO_BUILDINGS: { gx: number; gy: number; h: number; color: string }[] = [
   { gx: 1, gy: 1, h: 20, color: '#1a2744' },
   { gx: 2, gy: 1, h: 15, color: '#1c2840' },
@@ -50,7 +89,8 @@ const DECO_BUILDINGS: { gx: number; gy: number; h: number; color: string }[] = [
   { gx: 10, gy: 10, h: 11, color: '#151d30' },
 ];
 
-// Building architectural details by role
+// ─── Building details ────────────────────────────────────────────────────────
+
 function drawBuildingDetails(
   ctx: CanvasRenderingContext2D,
   cfg: BuildingConfig,
@@ -58,24 +98,31 @@ function drawBuildingDetails(
   bw: number, bh: number,
   time: number,
   status: AgentStatus,
+  darkness: number,
 ) {
   const hw = bw / 2;
-
-  // Windows - grid of lit squares
   const cols = Math.max(2, Math.floor(bw / 16));
   const rows = Math.max(2, Math.floor(bh / 18));
   const winW = 5;
   const winH = 6;
+
+  // Window glow intensity: bright at night, dim during day
+  const nightGlow = 0.3 + darkness * 0.7; // 0.3 day → 1.0 night
 
   // Left face windows
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < Math.ceil(cols / 2); c++) {
       const wx = cx - hw + 4 + c * (hw / (cols / 2 + 0.5));
       const wy = cy - bh + 10 + r * (bh / (rows + 0.5));
-      const flicker = status === 'working' ? 0.5 + Math.sin(time * 3 + r * 1.3 + c * 2.1) * 0.3 : 0.15;
-      ctx.fillStyle = status === 'idle'
-        ? `rgba(100,120,160,${0.08 + Math.sin(time * 0.5 + r + c) * 0.03})`
-        : `rgba(255,240,180,${flicker})`;
+      if (status === 'idle') {
+        const a = (0.08 + Math.sin(time * 0.5 + r + c) * 0.03) * (0.3 + darkness * 0.7);
+        ctx.fillStyle = `rgba(100,120,160,${a})`;
+      } else {
+        const flicker = status === 'working'
+          ? (0.5 + Math.sin(time * 3 + r * 1.3 + c * 2.1) * 0.3) * nightGlow
+          : 0.15 * nightGlow;
+        ctx.fillStyle = `rgba(255,240,180,${flicker})`;
+      }
       ctx.fillRect(wx, wy, winW, winH);
     }
   }
@@ -85,10 +132,15 @@ function drawBuildingDetails(
     for (let c = 0; c < Math.ceil(cols / 2); c++) {
       const wx = cx + 4 + c * (hw / (cols / 2 + 0.5));
       const wy = cy - bh + 10 + r * (bh / (rows + 0.5));
-      const flicker = status === 'working' ? 0.4 + Math.sin(time * 2.5 + r * 0.9 + c * 1.7) * 0.25 : 0.1;
-      ctx.fillStyle = status === 'idle'
-        ? `rgba(80,100,140,${0.06 + Math.sin(time * 0.3 + r + c) * 0.02})`
-        : `rgba(255,240,180,${flicker})`;
+      if (status === 'idle') {
+        const a = (0.06 + Math.sin(time * 0.3 + r + c) * 0.02) * (0.3 + darkness * 0.7);
+        ctx.fillStyle = `rgba(80,100,140,${a})`;
+      } else {
+        const flicker = status === 'working'
+          ? (0.4 + Math.sin(time * 2.5 + r * 0.9 + c * 1.7) * 0.25) * nightGlow
+          : 0.1 * nightGlow;
+        ctx.fillStyle = `rgba(255,240,180,${flicker})`;
+      }
       ctx.fillRect(wx, wy, winW, winH);
     }
   }
@@ -103,11 +155,29 @@ function drawBuildingDetails(
   ctx.stroke();
 }
 
+// ─── Context meter color ─────────────────────────────────────────────────────
+
+function contextColor(t: number): string {
+  if (t < 0.5) {
+    const r = Math.round(80 + 175 * (t * 2));
+    const g = Math.round(200 - 50 * (t * 2));
+    return `rgb(${r},${g},60)`;
+  }
+  const r = 255;
+  const g = Math.round(150 - 150 * ((t - 0.5) * 2));
+  return `rgb(${r},${g},40)`;
+}
+
+// ─── Component ───────────────────────────────────────────────────────────────
+
 export default function CityCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animRef = useRef<number>(0);
   const lastTime = useRef(0);
   const mouseRef = useRef({ dragging: false, lastX: 0, lastY: 0 });
+  // Track per-agent reboot flash (timestamp of last context reset)
+  const rebootFlashRef = useRef<Partial<Record<AgentRole, number>>>({});
+  const prevContextRef = useRef<Partial<Record<AgentRole, number>>>({});
 
   const tick = useSwarmStore(s => s.tick);
   const selectAgent = useSwarmStore(s => s.selectAgent);
@@ -132,10 +202,14 @@ export default function CityCanvas() {
     }
   }, []);
 
+  // ─── Draw single building ───────────────────────────────────────────────────
+
   const drawBuilding = useCallback((
     ctx: CanvasRenderingContext2D,
     role: AgentRole,
     time: number,
+    darkness: number,
+    overlay: OverlayMode,
   ) => {
     const agent = storeRef.current.agents[role];
     const b = agent.building;
@@ -151,7 +225,7 @@ export default function CityCanvas() {
     // Status glow under building
     if (agent.status !== 'idle') {
       const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, bw * 1.2);
-      const glowColor = agent.status === 'needs_input' ? b.color : // use building color
+      const glowColor = agent.status === 'needs_input' ? b.color :
         agent.status === 'done' ? '#4CAF50' : b.color;
       grad.addColorStop(0, glowColor + (agent.status === 'needs_input' ? '40' : '25'));
       grad.addColorStop(1, glowColor + '00');
@@ -167,25 +241,33 @@ export default function CityCanvas() {
     ctx.ellipse(cx + 4, cy + 6, bw * 0.5, bd * 0.3, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // Opacity for idle
     const alpha = agent.status === 'idle' ? 0.5 : 1;
     ctx.globalAlpha = alpha;
 
-    // Main building
-    const topCol = agent.status === 'idle' ? '#1a2030' : b.color;
-    const leftCol = agent.status === 'idle' ? '#0f1520' : b.dark;
-    const rightCol = agent.status === 'idle' ? '#222d40' : b.accent;
+    // Economy overlay: tint buildings by simulated token spend
+    let topCol = agent.status === 'idle' ? '#1a2030' : b.color;
+    let leftCol = agent.status === 'idle' ? '#0f1520' : b.dark;
+    let rightCol = agent.status === 'idle' ? '#222d40' : b.accent;
+
+    if (overlay === 'economy') {
+      // Use contextUsed as proxy for token spend
+      const spend = agent.contextUsed;
+      const r = Math.round(40 + 215 * spend);
+      const g = Math.round(200 - 160 * spend);
+      const tint = `rgb(${r},${g},40)`;
+      topCol = tint;
+      leftCol = `rgb(${Math.round(r * 0.6)},${Math.round(g * 0.6)},25)`;
+      rightCol = `rgb(${Math.round(r * 0.8)},${Math.round(g * 0.8)},30)`;
+    }
+
     drawIsoBox(ctx, cx, cy, bw, bd, bh, topCol, leftCol, rightCol, 'rgba(0,0,0,0.4)');
 
-    // Architectural details
     ctx.globalAlpha = alpha;
-    drawBuildingDetails(ctx, b, cx, cy, bw, bh, time, agent.status);
-
+    drawBuildingDetails(ctx, b, cx, cy, bw, bh, time, agent.status, darkness);
     ctx.globalAlpha = 1;
 
     // Status-specific effects
     if (agent.status === 'working') {
-      // Particles rising from building
       for (let i = 0; i < 5; i++) {
         const t = (time * 1.5 + i * 0.7) % 2;
         const px = cx + Math.sin(time * 2 + i * 1.5) * (bw * 0.25);
@@ -201,15 +283,12 @@ export default function CityCanvas() {
     }
 
     if (agent.status === 'needs_input') {
-      // Pulsing ring
       const pulse = 0.5 + Math.sin(time * 5) * 0.5;
       ctx.strokeStyle = `rgba(255,60,60,${0.4 * pulse})`;
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.ellipse(cx, cy - bh / 2, bw * 0.6 + pulse * 5, bd * 0.4 + pulse * 3, 0, 0, Math.PI * 2);
       ctx.stroke();
-
-      // Exclamation
       ctx.font = 'bold 16px system-ui';
       ctx.textAlign = 'center';
       ctx.fillStyle = `rgba(255,60,60,${0.7 + pulse * 0.3})`;
@@ -217,7 +296,6 @@ export default function CityCanvas() {
     }
 
     if (agent.status === 'done') {
-      // Sparkle effect
       for (let i = 0; i < 4; i++) {
         const angle = (time * 0.8 + i * Math.PI / 2) % (Math.PI * 2);
         const r = 12 + Math.sin(time * 2 + i) * 4;
@@ -232,7 +310,74 @@ export default function CityCanvas() {
       ctx.globalAlpha = 1;
       ctx.font = '14px system-ui';
       ctx.textAlign = 'center';
-      ctx.fillText('✓', cx, cy - bh - 10);
+      ctx.fillText('\u2713', cx, cy - bh - 10);
+    }
+
+    // ─── Context meter bar (vertical, right side of building) ──────────────
+
+    if (agent.contextUsed > 0) {
+      const meterH = bh * 0.6;
+      const meterW = 4;
+      const mx = cx + bw / 2 + 6;
+      const my = cy - bh + (bh - meterH) / 2;
+
+      // Background
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.beginPath();
+      ctx.roundRect(mx - 1, my - 1, meterW + 2, meterH + 2, 2);
+      ctx.fill();
+
+      // Fill (bottom-up)
+      const fillH = meterH * agent.contextUsed;
+      ctx.fillStyle = contextColor(agent.contextUsed);
+      ctx.beginPath();
+      ctx.roundRect(mx, my + meterH - fillH, meterW, fillH, 1);
+      ctx.fill();
+
+      // Percentage label
+      ctx.font = '7px system-ui';
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${Math.round(agent.contextUsed * 100)}`, mx + meterW / 2, my - 3);
+    }
+
+    // Smoke / spark particles when context > 90%
+    if (agent.contextWarning) {
+      for (let i = 0; i < 6; i++) {
+        const t2 = (time * 2 + i * 0.5) % 1.5;
+        const sx = cx + (Math.sin(time * 4 + i * 2.3) * bw * 0.3);
+        const sy = cy - bh - t2 * 15;
+        const sa = Math.max(0, 1 - t2 / 1.5);
+        // Smoke
+        ctx.beginPath();
+        ctx.arc(sx, sy, 2 + t2 * 2, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(180,80,30,${sa * 0.5})`;
+        ctx.fill();
+        // Spark
+        if (i % 2 === 0) {
+          const sparkX = cx + Math.sin(time * 8 + i * 3) * bw * 0.2;
+          const sparkY = cy - bh + Math.sin(time * 6 + i) * 5;
+          ctx.beginPath();
+          ctx.arc(sparkX, sparkY, 1, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(255,200,60,${0.6 + Math.sin(time * 10 + i) * 0.4})`;
+          ctx.fill();
+        }
+      }
+    }
+
+    // Reboot flash animation
+    const flashTime = rebootFlashRef.current[role];
+    if (flashTime !== undefined) {
+      const elapsed = time - flashTime;
+      if (elapsed < 0.5) {
+        const flashAlpha = (1 - elapsed / 0.5) * 0.6;
+        ctx.fillStyle = `rgba(100,200,255,${flashAlpha})`;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy - bh / 2, bw * 0.6, bh * 0.4, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        delete rebootFlashRef.current[role];
+      }
     }
 
     // Progress bar
@@ -252,7 +397,6 @@ export default function CityCanvas() {
       ctx.roundRect(barX, barY, barW * agent.progress, barH, 1.5);
       ctx.fill();
 
-      // Progress text
       ctx.font = '9px system-ui';
       ctx.fillStyle = 'rgba(255,255,255,0.5)';
       ctx.textAlign = 'center';
@@ -262,8 +406,6 @@ export default function CityCanvas() {
     // Building label
     ctx.font = 'bold 10px system-ui, -apple-system, sans-serif';
     ctx.textAlign = 'center';
-
-    // Label background
     const label = `${b.icon} ${b.buildingName}`;
     const labelW = ctx.measureText(label).width + 10;
     const labelY = cy - bh - (agent.status === 'working' ? 32 : 8);
@@ -275,10 +417,9 @@ export default function CityCanvas() {
     ctx.fillStyle = agent.status === 'idle' ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.85)';
     ctx.fillText(label, cx, labelY);
 
-    // Task name (small, below label)
     if (agent.currentTask && agent.status !== 'idle') {
       const taskLabel = agent.currentTask.length > 28
-        ? agent.currentTask.slice(0, 28) + '…'
+        ? agent.currentTask.slice(0, 28) + '\u2026'
         : agent.currentTask;
       ctx.font = '8px system-ui';
       ctx.fillStyle = 'rgba(255,255,255,0.3)';
@@ -287,6 +428,66 @@ export default function CityCanvas() {
 
     ctx.restore();
   }, []);
+
+  // ─── Draw power grid lines ─────────────────────────────────────────────────
+
+  const drawPowerGrid = useCallback((
+    ctx: CanvasRenderingContext2D,
+    time: number,
+    overlay: OverlayMode,
+  ) => {
+    const state = storeRef.current;
+    const prominent = overlay === 'power';
+    const baseAlpha = prominent ? 0.6 : 0.15;
+
+    for (const edge of POWER_EDGES) {
+      const a1 = state.agents[edge.from];
+      const a2 = state.agents[edge.to];
+      const p1 = gridToScreen(a1.building.gridX, a1.building.gridY);
+      const p2 = gridToScreen(a2.building.gridX, a2.building.gridY);
+
+      const active = a1.status === 'working' || a2.status === 'working';
+      const warned = a1.contextWarning || a2.contextWarning;
+
+      // Flicker when context near capacity
+      let lineAlpha = baseAlpha;
+      if (active) lineAlpha = prominent ? 0.9 : 0.35;
+      if (warned) lineAlpha *= 0.4 + Math.sin(time * 12) * 0.4; // rapid flicker
+
+      // Route through road intersection (center of grid)
+      const mid = gridToScreen(7.5, 7.5);
+
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.quadraticCurveTo(mid.x, mid.y, p2.x, p2.y);
+
+      const color = active ? (warned ? '255,100,50' : '100,200,255') : '60,80,120';
+      ctx.strokeStyle = `rgba(${color},${lineAlpha})`;
+      ctx.lineWidth = prominent ? 2.5 : 1.2;
+      ctx.stroke();
+
+      // Glow
+      if (active && prominent) {
+        ctx.strokeStyle = `rgba(${color},${lineAlpha * 0.3})`;
+        ctx.lineWidth = 6;
+        ctx.stroke();
+      }
+
+      // Animated pulse dot along the line
+      if (active) {
+        const t = (time * 0.5 + edge.from.length * 0.3) % 1;
+        // Approximate position on quadratic bezier
+        const px = (1 - t) * (1 - t) * p1.x + 2 * (1 - t) * t * mid.x + t * t * p2.x;
+        const py = (1 - t) * (1 - t) * p1.y + 2 * (1 - t) * t * mid.y + t * t * p2.y;
+        ctx.beginPath();
+        ctx.arc(px, py, prominent ? 3 : 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${color},${lineAlpha * 1.5})`;
+        ctx.fill();
+      }
+    }
+  }, []);
+
+  // ─── Render loop ───────────────────────────────────────────────────────────
 
   const render = useCallback((timestamp: number) => {
     const canvas = canvasRef.current;
@@ -302,25 +503,75 @@ export default function CityCanvas() {
     const W = canvas.width;
     const H = canvas.height;
     const time = timestamp / 1000;
+    const overlay = state.overlayMode;
 
-    // Background
+    // ─── Time of day ───────────────────────────────────────────────────────
+    const now = new Date();
+    const hourFrac = now.getHours() + now.getMinutes() / 60;
+    const darkness = getDarkness(hourFrac);
+    const ambient = getAmbientColor(hourFrac);
+
+    // Detect context resets for reboot flash
+    for (const role of Object.keys(state.agents) as AgentRole[]) {
+      const prev = prevContextRef.current[role] ?? 0;
+      const cur = state.agents[role].contextUsed;
+      if (prev > 0.3 && cur === 0) {
+        rebootFlashRef.current[role] = time;
+      }
+      prevContextRef.current[role] = cur;
+    }
+
+    // ─── Background gradient (time-aware) ──────────────────────────────────
     ctx.clearRect(0, 0, W, H);
     const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
-    bgGrad.addColorStop(0, '#050810');
-    bgGrad.addColorStop(0.5, '#0a0f1e');
-    bgGrad.addColorStop(1, '#060a13');
+
+    if (darkness >= 0.8) {
+      // Night (current default look)
+      bgGrad.addColorStop(0, '#050810');
+      bgGrad.addColorStop(0.5, '#0a0f1e');
+      bgGrad.addColorStop(1, '#060a13');
+    } else if (darkness <= 0.05) {
+      // Day — lighter but still techy
+      bgGrad.addColorStop(0, '#0e1525');
+      bgGrad.addColorStop(0.5, '#141e35');
+      bgGrad.addColorStop(1, '#0c1222');
+    } else {
+      // Dawn/dusk transition
+      const d = darkness;
+      const lerp = (a: number, b: number) => Math.round(a + (b - a) * d);
+      const top = `rgb(${lerp(14, 5)},${lerp(21, 8)},${lerp(37, 16)})`;
+      const mid = `rgb(${lerp(20, 10)},${lerp(30, 15)},${lerp(53, 30)})`;
+      const bot = `rgb(${lerp(12, 6)},${lerp(18, 10)},${lerp(34, 19)})`;
+      // Dusk warm tint
+      if (hourFrac >= 18 && hourFrac < 20) {
+        const duskT = (hourFrac - 18) / 2;
+        const warmR = Math.round(40 * (1 - duskT));
+        const topR = `rgb(${lerp(14, 5) + warmR},${lerp(21, 8)},${lerp(37, 16)})`;
+        const midR = `rgb(${lerp(20, 10) + warmR},${lerp(30, 15)},${lerp(53, 30)})`;
+        bgGrad.addColorStop(0, topR);
+        bgGrad.addColorStop(0.5, midR);
+        bgGrad.addColorStop(1, bot);
+      } else {
+        bgGrad.addColorStop(0, top);
+        bgGrad.addColorStop(0.5, mid);
+        bgGrad.addColorStop(1, bot);
+      }
+    }
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, W, H);
 
-    // Stars
-    for (const s of starsRef.current) {
-      ctx.beginPath();
-      ctx.arc(s.x * W, s.y * H * 0.6, s.r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(180,200,255,${s.a * (0.5 + Math.sin(time * 0.5 + s.x * 10) * 0.3)})`;
-      ctx.fill();
+    // ─── Stars (fade with darkness) ────────────────────────────────────────
+    const starAlpha = Math.max(0, darkness - 0.2) / 0.8; // visible only darkness > 0.2
+    if (starAlpha > 0) {
+      for (const s of starsRef.current) {
+        ctx.beginPath();
+        ctx.arc(s.x * W, s.y * H * 0.6, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(180,200,255,${s.a * starAlpha * (0.5 + Math.sin(time * 0.5 + s.x * 10) * 0.3)})`;
+        ctx.fill();
+      }
     }
 
-    // City scene
+    // ─── City scene ────────────────────────────────────────────────────────
     ctx.save();
     ctx.translate(W / 2 + state.cameraX, H * 0.38 + state.cameraY);
     ctx.scale(state.zoom, state.zoom);
@@ -339,21 +590,36 @@ export default function CityCanvas() {
         ctx.closePath();
 
         if (isRoad) {
-          ctx.fillStyle = '#151c2d';
+          // Road slightly lighter during day
+          const roadBright = Math.round(21 + (1 - darkness) * 8);
+          ctx.fillStyle = `rgb(${roadBright},${roadBright + 7},${roadBright + 24})`;
           ctx.fill();
           ctx.strokeStyle = 'rgba(80,120,180,0.08)';
           ctx.lineWidth = 0.5;
           ctx.stroke();
 
-          // Center line markings on main roads
+          // Center line markings
           if (gx === 7 || gx === 8 || gy === 7 || gy === 8) {
             if ((gx + gy) % 2 === 0) {
               ctx.fillStyle = 'rgba(255,200,60,0.08)';
               ctx.fillRect(pos.x - 1, pos.y - 0.5, 2, 1);
             }
           }
+
+          // Street lamp glow at night
+          if (darkness > 0.3 && (gx + gy) % 3 === 0) {
+            const lampAlpha = (darkness - 0.3) * 0.5;
+            const lampGrad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, TILE_WIDTH * 0.6);
+            lampGrad.addColorStop(0, `rgba(255,220,140,${lampAlpha})`);
+            lampGrad.addColorStop(1, 'rgba(255,220,140,0)');
+            ctx.fillStyle = lampGrad;
+            ctx.beginPath();
+            ctx.ellipse(pos.x, pos.y, TILE_WIDTH * 0.6, TILE_HEIGHT * 0.4, 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
         } else {
-          ctx.fillStyle = '#0b1020';
+          const groundBright = Math.round(11 + (1 - darkness) * 6);
+          ctx.fillStyle = `rgb(${groundBright},${groundBright + 5},${groundBright + 21})`;
           ctx.fill();
           ctx.strokeStyle = 'rgba(40,60,100,0.06)';
           ctx.lineWidth = 0.3;
@@ -362,19 +628,25 @@ export default function CityCanvas() {
       }
     }
 
-    // Deco buildings (background filler)
+    // Deco buildings
     for (const d of DECO_BUILDINGS) {
       const pos = gridToScreen(d.gx, d.gy);
       if (!ROAD_TILES.has(`${d.gx},${d.gy}`)) {
         const dark = '#0a0f1a';
         const light = '#1f2940';
         drawIsoBox(ctx, pos.x, pos.y, 28, 16, d.h, d.color, dark, light);
-        // Tiny windows
+        // Tiny windows - glow at night
         for (let r = 0; r < Math.floor(d.h / 10); r++) {
-          ctx.fillStyle = `rgba(255,240,180,${0.05 + Math.sin(time * 0.3 + d.gx + d.gy + r) * 0.03})`;
+          const winAlpha = (0.05 + Math.sin(time * 0.3 + d.gx + d.gy + r) * 0.03) * (0.3 + darkness * 0.7);
+          ctx.fillStyle = `rgba(255,240,180,${winAlpha})`;
           ctx.fillRect(pos.x - 6 + r * 5, pos.y - d.h + 5 + r * 8, 3, 3);
         }
       }
+    }
+
+    // ─── Power grid lines (before buildings, so they appear under) ─────────
+    if (overlay !== 'economy') {
+      drawPowerGrid(ctx, time, overlay);
     }
 
     // Vehicles
@@ -384,7 +656,6 @@ export default function CityCanvas() {
       const from = gridToScreen(fromB.gridX, fromB.gridY);
       const to = gridToScreen(toB.gridX, toB.gridY);
 
-      // Route via center
       const midX = 0;
       const midY = (from.y + to.y) / 2;
       let vx: number, vy: number;
@@ -398,11 +669,9 @@ export default function CityCanvas() {
         vy = midY + (to.y - midY) * t;
       }
 
-      // Glow
       ctx.shadowColor = v.color;
       ctx.shadowBlur = 10;
 
-      // Vehicle body
       ctx.beginPath();
       ctx.moveTo(vx, vy - 4);
       ctx.lineTo(vx + 7, vy);
@@ -412,7 +681,6 @@ export default function CityCanvas() {
       ctx.fillStyle = v.color;
       ctx.fill();
 
-      // Inner highlight
       ctx.beginPath();
       ctx.moveTo(vx, vy - 2);
       ctx.lineTo(vx + 3, vy);
@@ -424,7 +692,6 @@ export default function CityCanvas() {
       ctx.fill();
       ctx.globalAlpha = 1;
 
-      // Trail
       const angle = Math.atan2(to.y - from.y, to.x - from.x);
       for (let i = 1; i <= 4; i++) {
         const tx = vx - Math.cos(angle) * i * 4;
@@ -444,7 +711,7 @@ export default function CityCanvas() {
       (a, b) => (a.gridX + a.gridY) - (b.gridX + b.gridY)
     );
     for (const cfg of sortedBuildings) {
-      drawBuilding(ctx, cfg.role, time);
+      drawBuilding(ctx, cfg.role, time, darkness, overlay);
     }
 
     // Particles
@@ -469,14 +736,21 @@ export default function CityCanvas() {
 
     ctx.restore();
 
+    // ─── Night / dusk overlay on full scene ────────────────────────────────
+    if (darkness > 0.05) {
+      const overlayAlpha = darkness * 0.15; // subtle dark overlay
+      ctx.fillStyle = `rgba(${ambient.r},${ambient.g},${ambient.b},${overlayAlpha})`;
+      ctx.fillRect(0, 0, W, H);
+    }
+
     animRef.current = requestAnimationFrame(render);
-  }, [tick, drawBuilding]);
+  }, [tick, drawBuilding, drawPowerGrid]);
 
   // Click detection
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    if (mouseRef.current.dragging) return; // was a drag, not click
+    if (mouseRef.current.dragging) return;
     const rect = canvas.getBoundingClientRect();
     const state = storeRef.current;
     const mx = (e.clientX - rect.left - canvas.width / 2 - state.cameraX) / state.zoom;
@@ -559,7 +833,6 @@ export default function CityCanvas() {
       if (touchRef.current.lastDist > 0) {
         const scale = dist / touchRef.current.lastDist;
         setZoom(storeRef.current.zoom * scale);
-        // Pan with two fingers
         const panDx = midX - touchRef.current.lastX;
         const panDy = midY - touchRef.current.lastY;
         const s = storeRef.current;
