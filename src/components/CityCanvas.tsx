@@ -117,18 +117,20 @@ export default function CityCanvas() {
   const storeRef = useRef(useSwarmStore.getState());
   useEffect(() => useSwarmStore.subscribe(s => { storeRef.current = s; }), []);
 
-  // Starfield (generated once)
+  // Starfield (generated once, in effect to avoid SSR mismatch)
   const starsRef = useRef<{ x: number; y: number; r: number; a: number }[]>([]);
-  if (starsRef.current.length === 0) {
-    for (let i = 0; i < 120; i++) {
-      starsRef.current.push({
-        x: Math.random(),
-        y: Math.random(),
-        r: 0.3 + Math.random() * 1.2,
-        a: 0.2 + Math.random() * 0.5,
-      });
+  useEffect(() => {
+    if (starsRef.current.length === 0) {
+      for (let i = 0; i < 120; i++) {
+        starsRef.current.push({
+          x: Math.random(),
+          y: Math.random(),
+          r: 0.3 + Math.random() * 1.2,
+          a: 0.2 + Math.random() * 0.5,
+        });
+      }
     }
-  }
+  }, []);
 
   const drawBuilding = useCallback((
     ctx: CanvasRenderingContext2D,
@@ -495,6 +497,7 @@ export default function CityCanvas() {
 
   // Pan & zoom
   const dragStartRef = useRef({ x: 0, y: 0 });
+  const touchRef = useRef({ lastDist: 0, lastX: 0, lastY: 0 });
   const handleMouseDown = (e: React.MouseEvent) => {
     dragStartRef.current = { x: e.clientX, y: e.clientY };
     mouseRef.current = { dragging: false, lastX: e.clientX, lastY: e.clientY };
@@ -518,6 +521,60 @@ export default function CityCanvas() {
     setZoom(storeRef.current.zoom - e.deltaY * 0.001);
   };
 
+  // Touch handlers for mobile pan & pinch-zoom
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      dragStartRef.current = { x: t.clientX, y: t.clientY };
+      mouseRef.current = { dragging: false, lastX: t.clientX, lastY: t.clientY };
+      touchRef.current.lastDist = 0;
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      touchRef.current.lastDist = Math.sqrt(dx * dx + dy * dy);
+      touchRef.current.lastX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      touchRef.current.lastY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    }
+  };
+  const handleTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault();
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const dx = t.clientX - mouseRef.current.lastX;
+      const dy = t.clientY - mouseRef.current.lastY;
+      const totalDx = t.clientX - dragStartRef.current.x;
+      const totalDy = t.clientY - dragStartRef.current.y;
+      if (Math.abs(totalDx) + Math.abs(totalDy) > 5) mouseRef.current.dragging = true;
+      const s = storeRef.current;
+      setCameraPos(s.cameraX + dx, s.cameraY + dy);
+      mouseRef.current.lastX = t.clientX;
+      mouseRef.current.lastY = t.clientY;
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+      if (touchRef.current.lastDist > 0) {
+        const scale = dist / touchRef.current.lastDist;
+        setZoom(storeRef.current.zoom * scale);
+        // Pan with two fingers
+        const panDx = midX - touchRef.current.lastX;
+        const panDy = midY - touchRef.current.lastY;
+        const s = storeRef.current;
+        setCameraPos(s.cameraX + panDx, s.cameraY + panDy);
+      }
+      touchRef.current.lastDist = dist;
+      touchRef.current.lastX = midX;
+      touchRef.current.lastY = midY;
+    }
+  };
+  const handleTouchEnd = () => {
+    touchRef.current.lastDist = 0;
+    setTimeout(() => { mouseRef.current.dragging = false; }, 10);
+  };
+
   // Init
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -539,13 +596,17 @@ export default function CityCanvas() {
   return (
     <canvas
       ref={canvasRef}
-      className="w-full h-full cursor-grab active:cursor-grabbing"
+      className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
       onClick={handleClick}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
       onWheel={handleWheel}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
     />
   );
 }
