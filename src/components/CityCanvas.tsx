@@ -7,6 +7,7 @@ import {
   AgentRole, AgentStatus, BuildingConfig,
 } from '@/core/types';
 import { gridToScreen, drawIsoBox } from '@/core/isometric';
+import { getRoleSprite, getSprite, preloadAllSprites, DECO_SPRITES, NATURE_SPRITES } from '@/core/spriteLoader';
 
 // Road layout
 const ROAD_TILES = new Set<string>();
@@ -29,25 +30,26 @@ for (let i = 2; i < 13; i++) {
   ROAD_TILES.add(`12,${i}`);
 }
 
-// Decorative buildings (small filler)
-const DECO_BUILDINGS: { gx: number; gy: number; h: number; color: string }[] = [
-  { gx: 1, gy: 1, h: 20, color: '#1a2744' },
-  { gx: 2, gy: 1, h: 15, color: '#1c2840' },
-  { gx: 1, gy: 2, h: 25, color: '#192540' },
-  { gx: 13, gy: 1, h: 18, color: '#1a2744' },
-  { gx: 14, gy: 2, h: 22, color: '#1c2840' },
-  { gx: 1, gy: 13, h: 16, color: '#192540' },
-  { gx: 2, gy: 14, h: 20, color: '#1a2744' },
-  { gx: 13, gy: 13, h: 24, color: '#1c2840' },
-  { gx: 14, gy: 14, h: 18, color: '#192540' },
-  { gx: 5, gy: 6, h: 12, color: '#151d30' },
-  { gx: 6, gy: 5, h: 10, color: '#151d30' },
-  { gx: 9, gy: 6, h: 14, color: '#151d30' },
-  { gx: 10, gy: 5, h: 11, color: '#151d30' },
-  { gx: 5, gy: 9, h: 13, color: '#151d30' },
-  { gx: 6, gy: 10, h: 9, color: '#151d30' },
-  { gx: 9, gy: 9, h: 15, color: '#151d30' },
-  { gx: 10, gy: 10, h: 11, color: '#151d30' },
+// Decorative buildings (small filler) with sprite assignments
+type DecoBuilding = { gx: number; gy: number; h: number; color: string; sprite: string; scale: number };
+const DECO_BUILDINGS: DecoBuilding[] = [
+  { gx: 1, gy: 1, h: 20, color: '#1a2744', sprite: DECO_SPRITES[0], scale: 0.7 },
+  { gx: 2, gy: 1, h: 15, color: '#1c2840', sprite: DECO_SPRITES[1], scale: 0.65 },
+  { gx: 1, gy: 2, h: 25, color: '#192540', sprite: DECO_SPRITES[2], scale: 0.6 },
+  { gx: 13, gy: 1, h: 18, color: '#1a2744', sprite: DECO_SPRITES[3], scale: 0.65 },
+  { gx: 14, gy: 2, h: 22, color: '#1c2840', sprite: DECO_SPRITES[4], scale: 0.7 },
+  { gx: 1, gy: 13, h: 16, color: '#192540', sprite: NATURE_SPRITES[0], scale: 0.6 },
+  { gx: 2, gy: 14, h: 20, color: '#1a2744', sprite: DECO_SPRITES[5], scale: 0.65 },
+  { gx: 13, gy: 13, h: 24, color: '#1c2840', sprite: DECO_SPRITES[6], scale: 0.7 },
+  { gx: 14, gy: 14, h: 18, color: '#192540', sprite: NATURE_SPRITES[1], scale: 0.6 },
+  { gx: 5, gy: 6, h: 12, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
+  { gx: 6, gy: 5, h: 10, color: '#151d30', sprite: DECO_SPRITES[0], scale: 0.5 },
+  { gx: 9, gy: 6, h: 14, color: '#151d30', sprite: NATURE_SPRITES[0], scale: 0.5 },
+  { gx: 10, gy: 5, h: 11, color: '#151d30', sprite: DECO_SPRITES[2], scale: 0.5 },
+  { gx: 5, gy: 9, h: 13, color: '#151d30', sprite: NATURE_SPRITES[1], scale: 0.5 },
+  { gx: 6, gy: 10, h: 9, color: '#151d30', sprite: DECO_SPRITES[1], scale: 0.45 },
+  { gx: 9, gy: 9, h: 15, color: '#151d30', sprite: DECO_SPRITES[3], scale: 0.5 },
+  { gx: 10, gy: 10, h: 11, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
 ];
 
 // Building architectural details by role
@@ -171,15 +173,28 @@ export default function CityCanvas() {
     const alpha = agent.status === 'idle' ? 0.5 : 1;
     ctx.globalAlpha = alpha;
 
-    // Main building
-    const topCol = agent.status === 'idle' ? '#1a2030' : b.color;
-    const leftCol = agent.status === 'idle' ? '#0f1520' : b.dark;
-    const rightCol = agent.status === 'idle' ? '#222d40' : b.accent;
-    drawIsoBox(ctx, cx, cy, bw, bd, bh, topCol, leftCol, rightCol, 'rgba(0,0,0,0.4)');
+    // Main building - try sprite first, fallback to procedural
+    const sprite = getRoleSprite(role);
+    if (sprite && sprite.naturalWidth > 0) {
+      // Scale sprite to match building footprint
+      const spriteScale = b.width;
+      const destWidth = TILE_WIDTH * 1.3 * spriteScale;
+      const destHeight = (sprite.naturalHeight / sprite.naturalWidth) * destWidth;
+      const drawX = cx - destWidth / 2;
+      const drawY = cy - destHeight + TILE_HEIGHT * 0.35;
 
-    // Architectural details
-    ctx.globalAlpha = alpha;
-    drawBuildingDetails(ctx, b, cx, cy, bw, bh, time, agent.status);
+      ctx.drawImage(sprite, drawX, drawY, destWidth, destHeight);
+    } else {
+      // Fallback: procedural iso box while sprites load
+      const topCol = agent.status === 'idle' ? '#1a2030' : b.color;
+      const leftCol = agent.status === 'idle' ? '#0f1520' : b.dark;
+      const rightCol = agent.status === 'idle' ? '#222d40' : b.accent;
+      drawIsoBox(ctx, cx, cy, bw, bd, bh, topCol, leftCol, rightCol, 'rgba(0,0,0,0.4)');
+
+      // Architectural details (only for fallback)
+      ctx.globalAlpha = alpha;
+      drawBuildingDetails(ctx, b, cx, cy, bw, bh, time, agent.status);
+    }
 
     ctx.globalAlpha = 1;
 
@@ -362,17 +377,27 @@ export default function CityCanvas() {
       }
     }
 
-    // Deco buildings (background filler)
+    // Deco buildings (background filler) - sprites with fallback
     for (const d of DECO_BUILDINGS) {
       const pos = gridToScreen(d.gx, d.gy);
       if (!ROAD_TILES.has(`${d.gx},${d.gy}`)) {
-        const dark = '#0a0f1a';
-        const light = '#1f2940';
-        drawIsoBox(ctx, pos.x, pos.y, 28, 16, d.h, d.color, dark, light);
-        // Tiny windows
-        for (let r = 0; r < Math.floor(d.h / 10); r++) {
-          ctx.fillStyle = `rgba(255,240,180,${0.05 + Math.sin(time * 0.3 + d.gx + d.gy + r) * 0.03})`;
-          ctx.fillRect(pos.x - 6 + r * 5, pos.y - d.h + 5 + r * 8, 3, 3);
+        const decoSprite = getSprite(d.sprite);
+        if (decoSprite && decoSprite.naturalWidth > 0) {
+          const destW = TILE_WIDTH * d.scale;
+          const destH = (decoSprite.naturalHeight / decoSprite.naturalWidth) * destW;
+          const dx = pos.x - destW / 2;
+          const dy = pos.y - destH + TILE_HEIGHT * 0.3;
+          ctx.globalAlpha = 0.85;
+          ctx.drawImage(decoSprite, dx, dy, destW, destH);
+          ctx.globalAlpha = 1;
+        } else {
+          const dark = '#0a0f1a';
+          const light = '#1f2940';
+          drawIsoBox(ctx, pos.x, pos.y, 28, 16, d.h, d.color, dark, light);
+          for (let r = 0; r < Math.floor(d.h / 10); r++) {
+            ctx.fillStyle = `rgba(255,240,180,${0.05 + Math.sin(time * 0.3 + d.gx + d.gy + r) * 0.03})`;
+            ctx.fillRect(pos.x - 6 + r * 5, pos.y - d.h + 5 + r * 8, 3, 3);
+          }
         }
       }
     }
@@ -579,6 +604,10 @@ export default function CityCanvas() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Preload all building sprites
+    preloadAllSprites();
+
     const resize = () => {
       canvas.width = canvas.parentElement?.clientWidth || window.innerWidth;
       canvas.height = canvas.parentElement?.clientHeight || window.innerHeight;
