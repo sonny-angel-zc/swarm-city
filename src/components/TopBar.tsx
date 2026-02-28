@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useSwarmStore } from '@/core/store';
 
-export default function TopBar() {
+export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
   const [input, setInput] = useState('');
   const submitTask = useSwarmStore(s => s.submitTask);
   const currentTask = useSwarmStore(s => s.currentTask);
@@ -16,10 +16,10 @@ export default function TopBar() {
   };
 
   return (
-    <div className="h-14 bg-[#0d1117] border-b border-[#1e2a3a] flex items-center px-4 gap-4 z-10">
+    <div className="h-14 bg-[#0d1117] border-b border-[#1e2a3a] flex items-center px-3 md:px-4 gap-2 md:gap-4 z-10">
       <div className="flex items-center gap-2">
         <span className="text-lg">🏙️</span>
-        <span className="font-bold text-white/90 text-sm tracking-wide">SWARM CITY</span>
+        <span className="font-bold text-white/90 text-sm tracking-wide hidden sm:inline">SWARM CITY</span>
       </div>
       <form onSubmit={handleSubmit} className="flex-1 max-w-2xl">
         <div className="relative">
@@ -38,6 +38,14 @@ export default function TopBar() {
           </button>
         </div>
       </form>
+      <button
+        onClick={onToggleSidebar}
+        className="md:hidden p-2 rounded-lg hover:bg-[#161b22] text-white/60 transition-colors"
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M3 12h18M3 6h18M3 18h18" />
+        </svg>
+      </button>
       {currentTask && (
         <div className="flex items-center gap-2 text-xs">
           <span className={`inline-block w-2 h-2 rounded-full ${

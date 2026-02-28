@@ -19,7 +19,7 @@ const statusLabels: Record<string, string> = {
   blocked: 'Blocked',
 };
 
-export default function Sidebar() {
+export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
   const agents = useSwarmStore(s => s.agents);
   const currentTask = useSwarmStore(s => s.currentTask);
   const notifications = useSwarmStore(s => s.notifications);
@@ -29,7 +29,18 @@ export default function Sidebar() {
   const unread = notifications.filter(n => !n.read);
 
   return (
-    <div className="w-80 bg-[#0d1117] border-l border-[#1e2a3a] flex flex-col overflow-hidden">
+    <div className="w-80 bg-[#0d1117] border-l border-[#1e2a3a] flex flex-col overflow-hidden h-full">
+      {/* Mobile close button */}
+      {onClose && (
+        <div className="md:hidden flex items-center justify-between p-3 border-b border-[#1e2a3a]">
+          <span className="text-xs font-semibold text-white/60 uppercase tracking-wider">Panel</span>
+          <button onClick={onClose} className="p-1 text-white/40 hover:text-white/80">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      )}
       {/* Task Progress */}
       <div className="p-4 border-b border-[#1e2a3a]">
         <h2 className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-3">Task Progress</h2>
