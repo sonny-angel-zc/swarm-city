@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import {
   Agent, AgentRole, AgentStatus, Task, SubTask, Vehicle, Notification,
   LogEntry, BUILDING_CONFIGS, Particle,
+  TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
 } from './types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -39,6 +40,9 @@ type SwarmStore = {
   zoom: number;
   // SSE
   eventSource: EventSource | null;
+  // Economy
+  economy: TokenEconomy;
+  budgetPanelOpen: boolean;
 
   // Actions
   selectAgent: (role: AgentRole | null) => void;
@@ -49,6 +53,9 @@ type SwarmStore = {
   setZoom: (z: number) => void;
   dismissNotification: (id: string) => void;
   processSSEEvent: (event: SSEEvent) => void;
+  spendTokens: (role: AgentRole, amount: number, type: TransactionType) => void;
+  setAgentBudget: (role: AgentRole, budget: number) => void;
+  setBudgetPanelOpen: (open: boolean) => void;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -71,6 +78,28 @@ function createAgents(): Record<AgentRole, Agent> {
 
 let vehicleIdCounter = 0;
 let notifIdCounter = 0;
+let transactionIdCounter = 0;
+let lastHistoryTime = 0;
+
+function createInitialEconomy(): TokenEconomy {
+  const agentBudgets: Partial<Record<AgentRole, AgentBudget>> = {};
+  for (const cfg of BUILDING_CONFIGS) {
+    agentBudgets[cfg.role] = {
+      tokenBudget: 5000,
+      tokensSpent: 0,
+      costPerCall: cfg.role === 'engineer' ? 200 : cfg.role === 'researcher' ? 150 : 100,
+    };
+  }
+  return {
+    totalBudget: 50000,
+    spent: 0,
+    income: 0,
+    expenses: 0,
+    transactions: [],
+    history: [],
+    agentBudgets: agentBudgets as Record<AgentRole, AgentBudget>,
+  };
+}
 
 // ─── Store ────────────────────────────────────────────────────────────────────
 
@@ -88,16 +117,77 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   cameraY: 0,
   zoom: 1,
   eventSource: null,
+  economy: createInitialEconomy(),
+  budgetPanelOpen: false,
 
   selectAgent: (role) => set({ selectedAgent: role }),
+  setBudgetPanelOpen: (open) => set({ budgetPanelOpen: open }),
+
+  setAgentBudget: (role, budget) => {
+    const economy = { ...get().economy };
+    economy.agentBudgets = {
+      ...economy.agentBudgets,
+      [role]: { ...economy.agentBudgets[role], tokenBudget: budget },
+    };
+    set({ economy });
+  },
+
+  spendTokens: (role, amount, type) => {
+    const state = get();
+    const economy = { ...state.economy };
+    const tx: Transaction = {
+      id: `tx-${transactionIdCounter++}`,
+      agentRole: role,
+      amount,
+      type,
+      timestamp: Date.now(),
+    };
+    economy.spent += amount;
+    economy.expenses += amount;
+    economy.transactions = [...economy.transactions.slice(-200), tx];
+    economy.agentBudgets = {
+      ...economy.agentBudgets,
+      [role]: {
+        ...economy.agentBudgets[role],
+        tokensSpent: economy.agentBudgets[role].tokensSpent + amount,
+      },
+    };
+
+    // Spawn coin particles from the agent's building
+    const agent = state.agents[role];
+    const b = agent.building;
+    const cx = (b.gridX - b.gridY) * 32;
+    const cy = (b.gridX + b.gridY) * 19;
+    const coinParticles: Particle[] = [];
+    const count = amount > 300 ? 4 : amount > 100 ? 2 : 1;
+    for (let i = 0; i < count; i++) {
+      coinParticles.push({
+        x: cx + (Math.random() - 0.5) * 16,
+        y: cy - b.height + Math.random() * 10,
+        vx: (Math.random() - 0.5) * 12,
+        vy: -20 - Math.random() * 15,
+        life: 1.5,
+        maxLife: 1.5,
+        color: amount > 300 ? '#FFD700' : amount > 100 ? '#FFC107' : '#CD7F32',
+        size: amount > 300 ? 5 : amount > 100 ? 3.5 : 2.5,
+        type: 'coin',
+      });
+    }
+
+    set({
+      economy,
+      particles: [...state.particles, ...coinParticles],
+    });
+  },
 
   submitTask: async (title: string) => {
     // Close any existing SSE connection
     const prev = get().eventSource;
     if (prev) prev.close();
 
-    // Reset agents
-    set({ agents: createAgents() });
+    // Reset agents and economy
+    set({ agents: createAgents(), economy: createInitialEconomy() });
+    lastHistoryTime = 0;
 
     try {
       const res = await fetch('/api/tasks', {
@@ -256,6 +346,10 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
           progress: Math.min(0.95, agents[role].progress + 0.05),
         };
 
+        // Simulate token cost: 50-200
+        const outputCost = 50 + Math.floor(Math.random() * 150);
+        get().spendTokens(role, outputCost, 'api_call');
+
         // Update subtask progress
         const task2 = state.currentTask;
         if (task2) {
@@ -281,6 +375,10 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
           ].slice(-20) as LogEntry[],
           progress: Math.min(0.9, agents[role].progress + 0.08),
         };
+
+        // Simulate token cost: 100-500
+        const toolCost = 100 + Math.floor(Math.random() * 400);
+        get().spendTokens(role, toolCost, 'tool_use');
 
         // Random inter-agent vehicle on tool use
         if (Math.random() < 0.3) {
@@ -314,6 +412,19 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
             { timestamp: Date.now(), message: `✅ Completed task`, type: 'output' },
           ].slice(-20) as LogEntry[],
         };
+
+        // Income bonus for completing
+        const economy = { ...get().economy };
+        economy.income += 100;
+        const completionTx: Transaction = {
+          id: `tx-${transactionIdCounter++}`,
+          agentRole: role,
+          amount: -100,
+          type: 'completion',
+          timestamp: Date.now(),
+        };
+        economy.transactions = [...economy.transactions.slice(-200), completionTx];
+        set({ economy });
 
         // Vehicle back to PM
         vehicles.push({
@@ -478,13 +589,33 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
         x: p.x + p.vx * dt,
         y: p.y + p.vy * dt,
         life: p.life - dt,
-        size: p.size * (1 - dt * 0.5),
+        size: p.type === 'coin' ? p.size : p.size * (1 - dt * 0.5),
       }))
       .filter(p => p.life > 0);
+
+    // Economy history tracking — push a point every 3 seconds during active tasks
+    const now = Date.now();
+    const hasWorkingAgent = Object.values(state.agents).some(a => a.status === 'working');
+    let economy = state.economy;
+    if (hasWorkingAgent && now - lastHistoryTime > 3000) {
+      lastHistoryTime = now;
+      const agentSpend: Record<string, number> = {};
+      for (const role of Object.keys(state.agents) as AgentRole[]) {
+        agentSpend[role] = economy.agentBudgets[role].tokensSpent;
+      }
+      economy = {
+        ...economy,
+        history: [
+          ...economy.history.slice(-100),
+          { timestamp: now, totalSpent: economy.spent, agentSpend: agentSpend as Record<AgentRole, number> },
+        ],
+      };
+    }
 
     set({
       vehicles: activeVehicles,
       particles: updatedParticles,
+      economy,
     });
   },
 }));

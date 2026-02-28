@@ -449,11 +449,47 @@ export default function CityCanvas() {
 
     // Particles
     for (const p of state.particles) {
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, Math.max(0.3, p.size), 0, Math.PI * 2);
-      ctx.fillStyle = p.color;
-      ctx.globalAlpha = Math.max(0, p.life / p.maxLife) * 0.7;
-      ctx.fill();
+      const alpha = Math.max(0, p.life / p.maxLife);
+      if (p.type === 'coin') {
+        // Gold coin particle
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.9;
+        const r = Math.max(1, p.size);
+
+        // Outer gold circle
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        const coinGrad = ctx.createRadialGradient(p.x - r * 0.3, p.y - r * 0.3, 0, p.x, p.y, r);
+        coinGrad.addColorStop(0, '#FFF8DC');
+        coinGrad.addColorStop(0.5, p.color);
+        coinGrad.addColorStop(1, '#B8860B');
+        ctx.fillStyle = coinGrad;
+        ctx.fill();
+
+        // Inner emboss
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r * 0.55, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+
+        // Glow
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = r * 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r * 0.3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,200,0.4)';
+        ctx.fill();
+        ctx.shadowBlur = 0;
+
+        ctx.restore();
+      } else {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, Math.max(0.3, p.size), 0, Math.PI * 2);
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = alpha * 0.7;
+        ctx.fill();
+      }
     }
     ctx.globalAlpha = 1;
 
