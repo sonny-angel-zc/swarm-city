@@ -4,6 +4,19 @@ import {
   LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
 } from './types';
+import {
+  ModelCandidate,
+  ProviderHealth,
+  DEFAULT_MODEL_CHAIN,
+  createInitialProviderHealth,
+  pickFallbackModel,
+  onProviderFailure,
+  onProviderRateLimited,
+  onProviderRequestStart,
+  onProviderSuccess,
+  recoverProviderHealth,
+} from './fallbackPolicy';
+import { ProviderId, RateLimitManager, DEFAULT_RATE_LIMITS } from './rateLimiter';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +58,12 @@ type SwarmStore = {
   // Economy
   economy: TokenEconomy;
   budgetPanelOpen: boolean;
+  // Ops layer
+  rateLimiter: RateLimitManager;
+  modelCandidates: ModelCandidate[];
+  providerHealth: Record<ProviderId, ProviderHealth>;
+  activeModel: ModelCandidate | null;
+  lastFallbackReason: string | null;
 
   // Actions
   selectAgent: (role: AgentRole | null) => void;
@@ -126,6 +145,11 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   eventSource: null,
   economy: createInitialEconomy(),
   budgetPanelOpen: false,
+  rateLimiter: new RateLimitManager(DEFAULT_RATE_LIMITS),
+  modelCandidates: DEFAULT_MODEL_CHAIN,
+  providerHealth: createInitialProviderHealth(['anthropic', 'openai', 'google']),
+  activeModel: null,
+  lastFallbackReason: null,
 
   selectAgent: (role) => set({ selectedAgent: role }),
   setOverlayMode: (mode) => set({ overlayMode: mode }),
@@ -198,13 +222,144 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
     lastHistoryTime = 0;
 
     try {
-      const res = await fetch('/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title }),
-      });
-      const data = await res.json();
-      const taskId = data.taskId;
+      const state = get();
+      const limiter = state.rateLimiter;
+      const tried = new Set<string>();
+      let providerHealth = recoverProviderHealth(state.providerHealth);
+      let taskId: string | null = null;
+      let lastError = '';
+      let selectedModel: ModelCandidate | null = null;
+
+      while (tried.size < state.modelCandidates.length) {
+        const remainingCandidates = state.modelCandidates.filter((candidate) => {
+          const key = `${candidate.provider}:${candidate.model}`;
+          return !tried.has(key);
+        });
+
+        const decision = pickFallbackModel({
+          candidates: remainingCandidates,
+          providerHealth,
+          limiter,
+        });
+
+        if (!decision.selected) {
+          lastError = decision.reason;
+          set({
+            providerHealth,
+            activeModel: null,
+            lastFallbackReason: decision.reason,
+            activityLog: [
+              ...get().activityLog,
+              { timestamp: Date.now(), message: decision.reason, type: 'error' } as LogEntry,
+            ].slice(-100),
+          });
+          break;
+        }
+
+        selectedModel = decision.selected;
+        tried.add(`${selectedModel.provider}:${selectedModel.model}`);
+        providerHealth = onProviderRequestStart(providerHealth, selectedModel.provider);
+        limiter.recordRequest(selectedModel.provider, selectedModel.model);
+
+        set({
+          providerHealth,
+          activeModel: selectedModel,
+          lastFallbackReason: decision.reason,
+        });
+
+        try {
+          const res = await fetch('/api/tasks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              title,
+              provider: selectedModel.provider,
+              model: selectedModel.model,
+            }),
+          });
+
+          if (res.status === 429) {
+            const retryAfterRaw = res.headers.get('Retry-After');
+            const retryAfterSec = retryAfterRaw ? Number(retryAfterRaw) : 0;
+            const retryAfterMs = Number.isFinite(retryAfterSec) && retryAfterSec > 0
+              ? retryAfterSec * 1000
+              : 10_000;
+
+            limiter.recordRateLimited(selectedModel.provider, selectedModel.model, retryAfterMs);
+            providerHealth = onProviderRateLimited(providerHealth, selectedModel.provider, retryAfterMs);
+
+            const rateLimitMsg =
+              `${selectedModel.label} was rate limited; switching to fallback model.`;
+            set({
+              providerHealth,
+              lastFallbackReason: rateLimitMsg,
+              activityLog: [
+                ...get().activityLog,
+                { timestamp: Date.now(), message: rateLimitMsg, type: 'error' } as LogEntry,
+              ].slice(-100),
+            });
+            continue;
+          }
+
+          if (!res.ok) {
+            const errMsg = `${selectedModel.label} failed with ${res.status}; trying fallback.`;
+            providerHealth = onProviderFailure(providerHealth, selectedModel.provider, errMsg);
+            set({
+              providerHealth,
+              lastFallbackReason: errMsg,
+              activityLog: [
+                ...get().activityLog,
+                { timestamp: Date.now(), message: errMsg, type: 'error' } as LogEntry,
+              ].slice(-100),
+            });
+            continue;
+          }
+
+          const data = await res.json() as { taskId?: string };
+          if (!data.taskId) {
+            const errMsg = `${selectedModel.label} returned no task id; trying fallback.`;
+            providerHealth = onProviderFailure(providerHealth, selectedModel.provider, errMsg);
+            set({
+              providerHealth,
+              lastFallbackReason: errMsg,
+              activityLog: [
+                ...get().activityLog,
+                { timestamp: Date.now(), message: errMsg, type: 'error' } as LogEntry,
+              ].slice(-100),
+            });
+            continue;
+          }
+
+          providerHealth = onProviderSuccess(providerHealth, selectedModel.provider);
+          set({ providerHealth });
+          taskId = data.taskId;
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          lastError = msg;
+          providerHealth = onProviderFailure(
+            providerHealth,
+            selectedModel.provider,
+            `${selectedModel.label} error: ${msg}`,
+          );
+          set({
+            providerHealth,
+            lastFallbackReason: `${selectedModel.label} error; trying fallback.`,
+            activityLog: [
+              ...get().activityLog,
+              {
+                timestamp: Date.now(),
+                message: `${selectedModel.label} request failed: ${msg}`,
+                type: 'error',
+              } as LogEntry,
+            ].slice(-100),
+          });
+        }
+      }
+
+      if (!taskId) {
+        throw new Error(lastError || 'No provider available for task submission.');
+      }
 
       // Open SSE connection
       const es = new EventSource(`/api/tasks/${taskId}/events`);
@@ -234,8 +389,8 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
       set({
         activityLog: [
           ...get().activityLog,
-          { timestamp: Date.now(), message: `Failed to submit task: ${err}`, type: 'error' },
-        ],
+          { timestamp: Date.now(), message: `Failed to submit task: ${err}`, type: 'error' } as LogEntry,
+        ].slice(-100),
       });
     }
   },
@@ -637,10 +792,14 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
       };
     }
 
+    const providerHealth = recoverProviderHealth(state.providerHealth, now);
+    const providerHealthChanged = providerHealth !== state.providerHealth;
+
     set({
       vehicles: activeVehicles,
       particles: updatedParticles,
       economy,
+      ...(providerHealthChanged ? { providerHealth } : {}),
       ...(agentsChanged ? { agents } : {}),
     });
   },

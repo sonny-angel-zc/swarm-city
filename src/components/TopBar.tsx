@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useSwarmStore } from '@/core/store';
+import ProviderHealth from './ProviderHealth';
 
 export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
   const [input, setInput] = useState('');
@@ -60,6 +61,7 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
           </span>
         </div>
       )}
+      <ProviderHealth />
     </div>
   );
 }
