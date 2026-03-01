@@ -6,7 +6,7 @@ import {
   TelemetryState, BacklogItem, LinearSyncState,
 } from './types';
 import {
-ModelCandidate,
+  ModelCandidate,
   ProviderHealth,
   DEFAULT_MODEL_CHAIN,
   createInitialProviderHealth,
@@ -25,7 +25,8 @@ import {
   updateTelemetryState,
 } from './telemetry';
 import { fetchLinearBacklogStub } from './linearSync';
-DocCategory,
+import {
+  DocCategory,
   DocumentMemoryItem,
   PlanDocument,
   extractMemoryCandidates,
