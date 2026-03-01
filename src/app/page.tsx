@@ -9,6 +9,7 @@ import ActivityFeed from '@/components/ActivityFeed';
 import TaskInput from '@/components/TaskInput';
 import Treasury from '@/components/Treasury';
 import BudgetPanel from '@/components/BudgetPanel';
+import OverlayToggle from '@/components/OverlayToggle';
 
 export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -23,6 +24,7 @@ export default function Home() {
           <InspectPanel />
           <TaskInput />
           <BudgetPanel />
+          <OverlayToggle />
         </div>
         {/* Desktop sidebar */}
         <div className="hidden md:flex">

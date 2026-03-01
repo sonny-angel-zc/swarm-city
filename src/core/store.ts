@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import {
   Agent, AgentRole, AgentStatus, Task, SubTask, Vehicle, Notification,
-  LogEntry, BUILDING_CONFIGS, Particle,
+  LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
 } from './types';
 
@@ -38,6 +38,8 @@ type SwarmStore = {
   cameraX: number;
   cameraY: number;
   zoom: number;
+  // Overlay
+  overlayMode: OverlayMode;
   // SSE
   eventSource: EventSource | null;
   // Economy
@@ -46,6 +48,7 @@ type SwarmStore = {
 
   // Actions
   selectAgent: (role: AgentRole | null) => void;
+  setOverlayMode: (mode: OverlayMode) => void;
   submitTask: (title: string) => void;
   tick: (dt: number) => void;
   sendMessage: (agentRole: AgentRole, message: string) => void;
@@ -71,6 +74,9 @@ function createAgents(): Record<AgentRole, Agent> {
       progress: 0,
       log: [],
       building: cfg,
+      contextUsed: 0,
+      contextMax: 128000,
+      contextWarning: false,
     };
   }
   return agents as Record<AgentRole, Agent>;
@@ -116,11 +122,13 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   cameraX: 0,
   cameraY: 0,
   zoom: 1,
+  overlayMode: 'activity',
   eventSource: null,
   economy: createInitialEconomy(),
   budgetPanelOpen: false,
 
   selectAgent: (role) => set({ selectedAgent: role }),
+  setOverlayMode: (mode) => set({ overlayMode: mode }),
   setBudgetPanelOpen: (open) => set({ budgetPanelOpen: open }),
 
   setAgentBudget: (role, budget) => {
@@ -564,8 +572,25 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
 
     // Spawn particles for working agents
     const newParticles: Particle[] = [];
-    for (const role of Object.keys(state.agents) as AgentRole[]) {
-      const a = state.agents[role];
+    // Context simulation: fill while working, reset on idle/done
+    const agents = { ...state.agents };
+    let agentsChanged = false;
+    for (const role of Object.keys(agents) as AgentRole[]) {
+      const a = agents[role];
+      if (a.status === 'working') {
+        // Context slowly fills while working (reaches 1.0 in ~60s)
+        const newContext = Math.min(1, a.contextUsed + dt * 0.016);
+        const newWarning = newContext > 0.9;
+        if (newContext !== a.contextUsed || newWarning !== a.contextWarning) {
+          agents[role] = { ...a, contextUsed: newContext, contextWarning: newWarning };
+          agentsChanged = true;
+        }
+      } else if ((a.status === 'idle' || a.status === 'done') && a.contextUsed > 0) {
+        // Context resets when idle or done
+        agents[role] = { ...a, contextUsed: 0, contextWarning: false };
+        agentsChanged = true;
+      }
+
       if (a.status === 'working' && Math.random() < dt * 3) {
         const b = a.building;
         const cx = (b.gridX - b.gridY) * 32;
@@ -616,6 +641,7 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
       vehicles: activeVehicles,
       particles: updatedParticles,
       economy,
+      ...(agentsChanged ? { agents } : {}),
     });
   },
 }));
