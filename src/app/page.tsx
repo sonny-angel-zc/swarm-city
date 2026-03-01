@@ -10,6 +10,7 @@ import TaskInput from '@/components/TaskInput';
 import Treasury from '@/components/Treasury';
 import BudgetPanel from '@/components/BudgetPanel';
 import OverlayToggle from '@/components/OverlayToggle';
+import BacklogPanel from '@/components/BacklogPanel';
 
 export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -21,6 +22,7 @@ export default function Home() {
         <div className="flex-1 relative">
           <CityCanvas />
           <Treasury />
+          <BacklogPanel />
           <InspectPanel />
           <TaskInput />
           <BudgetPanel />

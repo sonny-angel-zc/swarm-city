@@ -3,6 +3,7 @@ import {
   Agent, AgentRole, AgentStatus, Task, SubTask, Vehicle, Notification,
   LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
+  TelemetryState, BacklogItem, LinearSyncState,
 } from './types';
 import {
   ModelCandidate,
@@ -17,6 +18,13 @@ import {
   recoverProviderHealth,
 } from './fallbackPolicy';
 import { ProviderId, RateLimitManager, DEFAULT_RATE_LIMITS } from './rateLimiter';
+import {
+  buildTelemetryEvent,
+  createInitialTelemetryState,
+  pickModelForRole,
+  updateTelemetryState,
+} from './telemetry';
+import { fetchLinearBacklogStub } from './linearSync';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,6 +72,9 @@ type SwarmStore = {
   providerHealth: Record<ProviderId, ProviderHealth>;
   activeModel: ModelCandidate | null;
   lastFallbackReason: string | null;
+  telemetry: TelemetryState;
+  backlog: BacklogItem[];
+  linear: LinearSyncState;
 
   // Actions
   selectAgent: (role: AgentRole | null) => void;
@@ -78,6 +89,8 @@ type SwarmStore = {
   spendTokens: (role: AgentRole, amount: number, type: TransactionType) => void;
   setAgentBudget: (role: AgentRole, budget: number) => void;
   setBudgetPanelOpen: (open: boolean) => void;
+  syncBacklog: () => Promise<void>;
+  setBacklogItemStatus: (id: string, status: BacklogItem['status']) => void;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,6 +117,7 @@ function createAgents(): Record<AgentRole, Agent> {
 let vehicleIdCounter = 0;
 let notifIdCounter = 0;
 let transactionIdCounter = 0;
+let telemetryIdCounter = 0;
 let lastHistoryTime = 0;
 
 function createInitialEconomy(): TokenEconomy {
@@ -150,6 +164,14 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   providerHealth: createInitialProviderHealth(['anthropic', 'openai', 'google']),
   activeModel: null,
   lastFallbackReason: null,
+  telemetry: createInitialTelemetryState(),
+  backlog: [],
+  linear: {
+    connected: false,
+    syncing: false,
+    lastSyncAt: null,
+    error: null,
+  },
 
   selectAgent: (role) => set({ selectedAgent: role }),
   setOverlayMode: (mode) => set({ overlayMode: mode }),
@@ -185,6 +207,22 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
       },
     };
 
+    const modelInfo = pickModelForRole(role, telemetryIdCounter);
+    const outputTokens = Math.max(1, amount);
+    const inputTokens = Math.max(1, Math.round(outputTokens * (type === 'tool_use' ? 0.7 : 0.45)));
+    const telemetryEvent = buildTelemetryEvent({
+      id: `te-${telemetryIdCounter++}`,
+      role,
+      provider: modelInfo.provider,
+      model: modelInfo.model,
+      kind: modelInfo.kind,
+      timestamp: Date.now(),
+      inputTokens,
+      outputTokens,
+      transactionType: type,
+    });
+    const telemetry = updateTelemetryState(state.telemetry, telemetryEvent);
+
     // Spawn coin particles from the agent's building
     const agent = state.agents[role];
     const b = agent.building;
@@ -208,6 +246,7 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
 
     set({
       economy,
+      telemetry,
       particles: [...state.particles, ...coinParticles],
     });
   },
@@ -217,8 +256,12 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
     const prev = get().eventSource;
     if (prev) prev.close();
 
-    // Reset agents and economy
-    set({ agents: createAgents(), economy: createInitialEconomy() });
+    // Reset run-specific state
+    set({
+      agents: createAgents(),
+      economy: createInitialEconomy(),
+      telemetry: createInitialTelemetryState(),
+    });
     lastHistoryTime = 0;
 
     try {
@@ -647,7 +690,21 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
           read: false,
         });
         log.push({ timestamp: Date.now(), message: `${agents[role].building.name} errored: ${event.error}`, type: 'error' });
-        set({ agents, notifications, activityLog: log.slice(-100) });
+        const backlogItem: BacklogItem = {
+          id: `BL-${Date.now()}-${role}`,
+          title: `Investigate ${agents[role].building.buildingName} error`,
+          ownerRole: role,
+          status: 'todo',
+          priority: 'P1',
+          source: 'local',
+          updatedAt: Date.now(),
+        };
+        set({
+          agents,
+          notifications,
+          activityLog: log.slice(-100),
+          backlog: [backlogItem, ...state.backlog].slice(0, 40),
+        });
         break;
       }
 
@@ -715,6 +772,42 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   setZoom: (z) => set({ zoom: Math.max(0.3, Math.min(2.5, z)) }),
   dismissNotification: (id) =>
     set({ notifications: get().notifications.map(n => n.id === id ? { ...n, read: true } : n) }),
+  syncBacklog: async () => {
+    set(state => ({ linear: { ...state.linear, syncing: true, error: null } }));
+    try {
+      const fetched = await fetchLinearBacklogStub();
+      const local = get().backlog.filter(item => item.source === 'local');
+      const merged = [...fetched, ...local]
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .slice(0, 40);
+      set({
+        backlog: merged,
+        linear: {
+          connected: true,
+          syncing: false,
+          lastSyncAt: Date.now(),
+          error: null,
+        },
+      });
+    } catch (err) {
+      set(state => ({
+        linear: {
+          ...state.linear,
+          syncing: false,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }));
+    }
+  },
+  setBacklogItemStatus: (id, status) => {
+    set(state => ({
+      backlog: state.backlog.map(item =>
+        item.id === id
+          ? { ...item, status, updatedAt: Date.now() }
+          : item
+      ),
+    }));
+  },
 
   // tick() — ANIMATION ONLY. No fake progress.
   tick: (dt: number) => {

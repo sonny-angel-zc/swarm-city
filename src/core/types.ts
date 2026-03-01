@@ -123,6 +123,73 @@ export type TokenEconomy = {
   agentBudgets: Record<AgentRole, AgentBudget>;
 };
 
+// ─── Multi-Model Telemetry ───────────────────────────────────────────────────
+
+export type ModelProvider = 'openai' | 'anthropic' | 'google';
+
+export type ModelKind = 'reasoning' | 'analysis' | 'review';
+
+export type TelemetryEvent = {
+  id: string;
+  timestamp: number;
+  role: AgentRole;
+  provider: ModelProvider;
+  model: string;
+  kind: ModelKind;
+  inputTokens: number;
+  outputTokens: number;
+  estimatedCostUsd: number;
+  transactionType: TransactionType;
+};
+
+export type ProviderSpend = {
+  provider: ModelProvider;
+  tokens: number;
+  costUsd: number;
+  events: number;
+};
+
+export type ModelSpend = {
+  model: string;
+  provider: ModelProvider;
+  tokens: number;
+  costUsd: number;
+  events: number;
+};
+
+export type TelemetryState = {
+  events: TelemetryEvent[];
+  providerSpend: Record<ModelProvider, ProviderSpend>;
+  modelSpend: Record<string, ModelSpend>;
+  burnRatePerMinUsd: number;
+  totalCostUsd: number;
+};
+
+// ─── Backlog / Linear Sync ───────────────────────────────────────────────────
+
+export type BacklogPriority = 'P0' | 'P1' | 'P2' | 'P3';
+
+export type BacklogStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
+
+export type BacklogSource = 'local' | 'linear_stub';
+
+export type BacklogItem = {
+  id: string;
+  title: string;
+  ownerRole: AgentRole;
+  status: BacklogStatus;
+  priority: BacklogPriority;
+  source: BacklogSource;
+  updatedAt: number;
+};
+
+export type LinearSyncState = {
+  connected: boolean;
+  syncing: boolean;
+  lastSyncAt: number | null;
+  error: string | null;
+};
+
 export type Notification = {
   id: string;
   agentRole: AgentRole;
