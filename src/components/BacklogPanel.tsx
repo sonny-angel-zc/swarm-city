@@ -1,96 +1,337 @@
 'use client';
 
-import { useEffect } from 'react';
-import { useSwarmStore } from '@/core/store';
-import { BacklogPriority, BacklogStatus } from '@/core/types';
+import React, { useState } from 'react';
+import { useSwarmStore } from '../core/store';
+import { BacklogItem, BacklogPriority } from '../core/types';
 
-const PRIORITY_CLASS: Record<BacklogPriority, string> = {
-  P0: 'text-red-300 border-red-500/30 bg-red-500/10',
-  P1: 'text-orange-300 border-orange-500/30 bg-orange-500/10',
-  P2: 'text-yellow-300 border-yellow-500/30 bg-yellow-500/10',
-  P3: 'text-blue-300 border-blue-500/30 bg-blue-500/10',
+const PRIORITY_COLORS: Record<BacklogPriority, string> = {
+  P0: '#ef4444',
+  P1: '#f97316',
+  P2: '#eab308',
+  P3: '#6b7280',
 };
 
-const STATUS_ORDER: BacklogStatus[] = ['todo', 'in_progress', 'blocked', 'done'];
+const STATUS_ICONS: Record<string, string> = {
+  todo: '○',
+  in_progress: '◑',
+  blocked: '⊘',
+  done: '●',
+};
+
+function IssueCard({ item }: { item: BacklogItem }) {
+  const updateIssueStatus = useSwarmStore(s => s.updateLinearIssueStatus);
+
+  const handleStatusCycle = async () => {
+    if (!item.linearId) return;
+    const cycle: Record<string, string> = {
+      todo: 'started',
+      in_progress: 'completed',
+      done: 'unstarted',
+      blocked: 'started',
+    };
+    const nextType = cycle[item.status] ?? 'unstarted';
+    await updateIssueStatus(item.linearId, nextType);
+  };
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 10px',
+        borderBottom: '1px solid rgba(255,255,255,0.06)',
+        fontSize: 13,
+      }}
+    >
+      <button
+        onClick={handleStatusCycle}
+        title={`Status: ${item.statusLabel ?? item.status} — click to cycle`}
+        style={{
+          background: 'none',
+          border: 'none',
+          cursor: item.linearId ? 'pointer' : 'default',
+          fontSize: 14,
+          color: item.status === 'done' ? '#22c55e' : item.status === 'in_progress' ? '#3b82f6' : '#9ca3af',
+        }}
+      >
+        {STATUS_ICONS[item.status] ?? '○'}
+      </button>
+
+      <span
+        style={{
+          background: PRIORITY_COLORS[item.priority],
+          color: '#fff',
+          borderRadius: 3,
+          padding: '1px 5px',
+          fontSize: 10,
+          fontWeight: 700,
+          minWidth: 22,
+          textAlign: 'center',
+        }}
+      >
+        {item.priority}
+      </span>
+
+      <span style={{ color: '#6b7280', fontSize: 11, minWidth: 48 }}>{item.id}</span>
+
+      {item.linearUrl ? (
+        <a
+          href={item.linearUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: '#e2e8f0', textDecoration: 'none', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          title={item.title}
+        >
+          {item.title}
+        </a>
+      ) : (
+        <span style={{ color: '#e2e8f0', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {item.title}
+        </span>
+      )}
+
+      {item.labels && item.labels.length > 0 && (
+        <span style={{ fontSize: 10, color: '#818cf8' }}>
+          {item.labels.join(', ')}
+        </span>
+      )}
+
+      {item.ownerName && (
+        <span style={{ fontSize: 10, color: '#9ca3af' }}>{item.ownerName}</span>
+      )}
+    </div>
+  );
+}
+
+function CreateIssueForm({ onClose }: { onClose: () => void }) {
+  const [title, setTitle] = useState('');
+  const [priority, setPriority] = useState(3);
+  const [submitting, setSubmitting] = useState(false);
+  const createIssue = useSwarmStore(s => s.createLinearIssue);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    setSubmitting(true);
+    await createIssue(title.trim(), undefined, priority);
+    setSubmitting(false);
+    setTitle('');
+    onClose();
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      style={{
+        display: 'flex',
+        gap: 6,
+        padding: '8px 10px',
+        borderBottom: '1px solid rgba(255,255,255,0.1)',
+        alignItems: 'center',
+      }}
+    >
+      <input
+        value={title}
+        onChange={e => setTitle(e.target.value)}
+        placeholder="Issue title..."
+        autoFocus
+        style={{
+          flex: 1,
+          background: 'rgba(255,255,255,0.06)',
+          border: '1px solid rgba(255,255,255,0.15)',
+          borderRadius: 4,
+          padding: '4px 8px',
+          color: '#e2e8f0',
+          fontSize: 12,
+          outline: 'none',
+        }}
+      />
+      <select
+        value={priority}
+        onChange={e => setPriority(Number(e.target.value))}
+        style={{
+          background: 'rgba(255,255,255,0.06)',
+          border: '1px solid rgba(255,255,255,0.15)',
+          borderRadius: 4,
+          color: '#e2e8f0',
+          fontSize: 11,
+          padding: '4px 6px',
+        }}
+      >
+        <option value={1}>Urgent</option>
+        <option value={2}>High</option>
+        <option value={3}>Medium</option>
+        <option value={4}>Low</option>
+      </select>
+      <button
+        type="submit"
+        disabled={submitting || !title.trim()}
+        style={{
+          background: '#3b82f6',
+          color: '#fff',
+          border: 'none',
+          borderRadius: 4,
+          padding: '4px 10px',
+          fontSize: 11,
+          cursor: 'pointer',
+          opacity: submitting ? 0.5 : 1,
+        }}
+      >
+        {submitting ? '...' : 'Create'}
+      </button>
+      <button
+        type="button"
+        onClick={onClose}
+        style={{
+          background: 'none',
+          color: '#9ca3af',
+          border: 'none',
+          cursor: 'pointer',
+          fontSize: 12,
+        }}
+      >
+        ✕
+      </button>
+    </form>
+  );
+}
 
 export default function BacklogPanel() {
   const backlog = useSwarmStore(s => s.backlog);
   const linear = useSwarmStore(s => s.linear);
-  const syncBacklog = useSwarmStore(s => s.syncBacklog);
-  const setBacklogItemStatus = useSwarmStore(s => s.setBacklogItemStatus);
+  const syncLinear = useSwarmStore(s => s.syncLinear);
+  const [showCreate, setShowCreate] = useState(false);
 
-  useEffect(() => {
-    if (!linear.connected && !linear.syncing && backlog.length === 0) {
-      syncBacklog();
-    }
-  }, [backlog.length, linear.connected, linear.syncing, syncBacklog]);
+  const grouped = {
+    in_progress: backlog.filter(i => i.status === 'in_progress'),
+    todo: backlog.filter(i => i.status === 'todo'),
+    blocked: backlog.filter(i => i.status === 'blocked'),
+    done: backlog.filter(i => i.status === 'done'),
+  };
 
   return (
-    <div className="absolute top-3 right-3 z-20 w-80 max-h-[56vh] bg-[#0d1117]/92 backdrop-blur-sm border border-[#2b3443] rounded-lg overflow-hidden shadow-2xl">
-      <div className="px-3 py-2 border-b border-[#1e2a3a] flex items-center justify-between">
-        <div>
-          <p className="text-[10px] text-white/35 uppercase tracking-wider">Backlog</p>
-          <p className="text-xs text-white/70">Linear stub + local incidents</p>
+    <div
+      style={{
+        position: 'absolute',
+        right: 12,
+        bottom: 12,
+        width: 420,
+        maxHeight: '60vh',
+        background: 'rgba(15, 15, 25, 0.92)',
+        borderRadius: 10,
+        border: '1px solid rgba(255,255,255,0.08)',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+        backdropFilter: 'blur(12px)',
+      }}
+    >
+      {/* Header */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '10px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.08)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#e2e8f0' }}>
+            Linear Backlog
+          </span>
+          <span style={{ fontSize: 10, color: '#6b7280' }}>
+            {backlog.length} issues
+          </span>
+          {linear.syncing && (
+            <span style={{ fontSize: 10, color: '#3b82f6' }}>syncing...</span>
+          )}
         </div>
-        <button
-          onClick={() => syncBacklog()}
-          disabled={linear.syncing}
-          className="text-[10px] px-2 py-1 rounded bg-[#1b2432] border border-[#334155] text-white/70 hover:text-white/90 disabled:opacity-50"
-        >
-          {linear.syncing ? 'Syncing...' : 'Sync'}
-        </button>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button
+            onClick={() => setShowCreate(v => !v)}
+            style={{
+              background: 'rgba(59,130,246,0.15)',
+              color: '#60a5fa',
+              border: 'none',
+              borderRadius: 4,
+              padding: '3px 8px',
+              fontSize: 11,
+              cursor: 'pointer',
+            }}
+          >
+            + New
+          </button>
+          <button
+            onClick={syncLinear}
+            disabled={linear.syncing}
+            style={{
+              background: 'rgba(255,255,255,0.06)',
+              color: '#9ca3af',
+              border: 'none',
+              borderRadius: 4,
+              padding: '3px 8px',
+              fontSize: 11,
+              cursor: 'pointer',
+              opacity: linear.syncing ? 0.5 : 1,
+            }}
+          >
+            ↻ Sync
+          </button>
+        </div>
       </div>
 
-      <div className="px-3 py-1.5 border-b border-[#1e2a3a] text-[10px] text-white/40 flex items-center justify-between">
-        <span>{linear.connected ? 'connected' : 'disconnected'}</span>
-        <span>
-          {linear.lastSyncAt
-            ? `updated ${new Date(linear.lastSyncAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-            : 'never synced'}
-        </span>
-      </div>
+      {showCreate && <CreateIssueForm onClose={() => setShowCreate(false)} />}
 
       {linear.error && (
-        <div className="px-3 py-1.5 text-[10px] text-red-300 border-b border-red-500/20 bg-red-500/5">
-          sync failed: {linear.error}
+        <div style={{ padding: '6px 12px', fontSize: 11, color: '#ef4444', background: 'rgba(239,68,68,0.1)' }}>
+          {linear.error}
         </div>
       )}
 
-      <div className="overflow-y-auto max-h-[40vh] p-2 space-y-2">
-        {backlog.length === 0 ? (
-          <p className="text-[11px] text-white/30 italic p-2">No backlog items.</p>
-        ) : (
-          backlog.slice(0, 12).map(item => (
-            <div key={item.id} className="rounded-md border border-[#253041] bg-[#141b25] p-2">
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-[11px] text-white/80 leading-snug">{item.title}</p>
-                <span className={`text-[9px] px-1.5 py-0.5 rounded border ${PRIORITY_CLASS[item.priority]}`}>
-                  {item.priority}
-                </span>
+      {/* Issues list */}
+      <div style={{ overflowY: 'auto', flex: 1 }}>
+        {(['in_progress', 'todo', 'blocked', 'done'] as const).map(status => {
+          const items = grouped[status];
+          if (items.length === 0) return null;
+          return (
+            <div key={status}>
+              <div
+                style={{
+                  padding: '6px 12px',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: 1,
+                  color: '#6b7280',
+                  background: 'rgba(255,255,255,0.02)',
+                }}
+              >
+                {STATUS_ICONS[status]} {status.replace('_', ' ')} ({items.length})
               </div>
-              <div className="mt-1 flex items-center justify-between text-[10px] text-white/45">
-                <span>{item.id} • {item.ownerRole}</span>
-                <span>{item.source === 'linear_stub' ? 'linear' : 'local'}</span>
-              </div>
-              <div className="mt-1.5 flex gap-1">
-                {STATUS_ORDER.map(status => (
-                  <button
-                    key={status}
-                    onClick={() => setBacklogItemStatus(item.id, status)}
-                    className={`text-[9px] px-1.5 py-0.5 rounded border transition-colors ${
-                      item.status === status
-                        ? 'bg-[#315a91]/30 border-[#4b79b8] text-blue-200'
-                        : 'bg-[#0f1520] border-[#2a3546] text-white/45 hover:text-white/70'
-                    }`}
-                  >
-                    {status.replace('_', ' ')}
-                  </button>
-                ))}
-              </div>
+              {items.map(item => (
+                <IssueCard key={item.id} item={item} />
+              ))}
             </div>
-          ))
-        )}
+          );
+        })}
       </div>
+
+      {/* Footer */}
+      {linear.lastSyncAt && (
+        <div
+          style={{
+            padding: '4px 12px',
+            fontSize: 9,
+            color: '#4b5563',
+            borderTop: '1px solid rgba(255,255,255,0.05)',
+            textAlign: 'right',
+          }}
+        >
+          Last synced: {new Date(linear.lastSyncAt).toLocaleTimeString()}
+        </div>
+      )}
     </div>
   );
 }

@@ -171,7 +171,7 @@ export type BacklogPriority = 'P0' | 'P1' | 'P2' | 'P3';
 
 export type BacklogStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 
-export type BacklogSource = 'local' | 'linear_stub';
+export type BacklogSource = 'local' | 'linear_stub' | 'linear';
 
 export type BacklogItem = {
   id: string;
@@ -180,6 +180,11 @@ export type BacklogItem = {
   status: BacklogStatus;
   priority: BacklogPriority;
   source: BacklogSource;
+  linearId?: string;
+  linearUrl?: string;
+  ownerName?: string;
+  statusLabel?: string;
+  labels?: string[];
   updatedAt: number;
 };
 

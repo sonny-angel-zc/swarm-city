@@ -24,7 +24,7 @@ import {
   pickModelForRole,
   updateTelemetryState,
 } from './telemetry';
-import { fetchLinearBacklogStub } from './linearSync';
+import { syncFromLinear, createLinearIssue as createLinearIssueApi, updateLinearIssueStatus as updateLinearIssueStatusApi } from './linearSync';
 import {
   DocCategory,
   DocumentMemoryItem,
@@ -104,6 +104,9 @@ type SwarmStore = {
   setAgentBudget: (role: AgentRole, budget: number) => void;
   setBudgetPanelOpen: (open: boolean) => void;
 syncBacklog: () => Promise<void>;
+  syncLinear: () => Promise<void>;
+  createLinearIssue: (title: string, description?: string, priority?: number) => Promise<void>;
+  updateLinearIssueStatus: (issueId: string, newStatusType: string) => Promise<void>;
   setBacklogItemStatus: (id: string, status: BacklogItem['status']) => void;
 setDocsFilter: (filter: 'all' | DocCategory) => void;
   setDocsQuery: (query: string) => void;
@@ -853,11 +856,11 @@ docsRegistry: getPlanRegistry(),
   syncBacklog: async () => {
     set(state => ({ linear: { ...state.linear, syncing: true, error: null } }));
     try {
-      const fetched = await fetchLinearBacklogStub();
+      const fetched = await syncFromLinear();
       const local = get().backlog.filter(item => item.source === 'local');
       const merged = [...fetched, ...local]
         .sort((a, b) => b.updatedAt - a.updatedAt)
-        .slice(0, 40);
+        .slice(0, 100);
       set({
         backlog: merged,
         linear: {
@@ -874,6 +877,39 @@ docsRegistry: getPlanRegistry(),
           syncing: false,
           error: err instanceof Error ? err.message : String(err),
         },
+      }));
+    }
+  },
+  syncLinear: async () => {
+    // Alias for syncBacklog
+    get().syncBacklog();
+  },
+  createLinearIssue: async (title: string, description?: string, priority?: number) => {
+    try {
+      const item = await createLinearIssueApi(title, description, priority);
+      if (item) {
+        set(state => ({
+          backlog: [item, ...state.backlog],
+        }));
+      }
+      // Re-sync to get server state
+      get().syncBacklog();
+    } catch (err) {
+      set(state => ({
+        linear: { ...state.linear, error: err instanceof Error ? err.message : String(err) },
+      }));
+    }
+  },
+  updateLinearIssueStatus: async (issueId: string, newStatusType: string) => {
+    try {
+      const success = await updateLinearIssueStatusApi(issueId, newStatusType);
+      if (success) {
+        // Re-sync to get updated state from Linear
+        get().syncBacklog();
+      }
+    } catch (err) {
+      set(state => ({
+        linear: { ...state.linear, error: err instanceof Error ? err.message : String(err) },
       }));
     }
   },
