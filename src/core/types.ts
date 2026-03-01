@@ -81,6 +81,41 @@ export type Particle = {
   maxLife: number;
   color: string;
   size: number;
+  type?: 'default' | 'coin';
+};
+
+// ─── Economy Types ────────────────────────────────────────────────────────────
+
+export type TransactionType = 'api_call' | 'tool_use' | 'completion';
+
+export type Transaction = {
+  id: string;
+  agentRole: AgentRole;
+  amount: number;
+  type: TransactionType;
+  timestamp: number;
+};
+
+export type EconomyHistoryPoint = {
+  timestamp: number;
+  totalSpent: number;
+  agentSpend: Record<AgentRole, number>;
+};
+
+export type AgentBudget = {
+  tokenBudget: number;
+  tokensSpent: number;
+  costPerCall: number;
+};
+
+export type TokenEconomy = {
+  totalBudget: number;
+  spent: number;
+  income: number;    // earned from completed tasks
+  expenses: number;  // tokens consumed
+  transactions: Transaction[];
+  history: EconomyHistoryPoint[];
+  agentBudgets: Record<AgentRole, AgentBudget>;
 };
 
 export type Notification = {

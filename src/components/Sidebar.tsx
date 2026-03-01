@@ -23,6 +23,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
   const agents = useSwarmStore(s => s.agents);
   const currentTask = useSwarmStore(s => s.currentTask);
   const notifications = useSwarmStore(s => s.notifications);
+  const economy = useSwarmStore(s => s.economy);
   const selectAgent = useSwarmStore(s => s.selectAgent);
   const dismissNotification = useSwarmStore(s => s.dismissNotification);
 
@@ -83,6 +84,12 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
         <div className="space-y-2">
           {BUILDING_CONFIGS.map(cfg => {
             const agent = agents[cfg.role];
+            const budget = economy.agentBudgets[cfg.role];
+            const usedPct = budget.tokensSpent / budget.tokenBudget;
+            const budgetColor =
+              usedPct > 0.8 ? '#EF4444' :
+              usedPct > 0.5 ? '#F59E0B' :
+              cfg.color;
             return (
               <button
                 key={cfg.role}
@@ -92,17 +99,36 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
                 <div className="flex items-center gap-2">
                   <span className="text-base">{cfg.icon}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium text-white/80 group-hover:text-white/95 truncate">
-                      {cfg.buildingName}
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium text-white/80 group-hover:text-white/95 truncate">
+                        {cfg.buildingName}
+                      </div>
+                      {budget.tokensSpent > 0 && (
+                        <span className="text-[9px] font-mono" style={{ color: budgetColor }}>
+                          {budget.tokensSpent.toLocaleString()}
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agent.status]}`} />
                       <span className="text-[10px] text-white/40">{statusLabels[agent.status]}</span>
+                      {agent.status === 'working' && (
+                        <span className="text-[10px] text-blue-400 font-mono ml-auto">{Math.round(agent.progress * 100)}%</span>
+                      )}
                     </div>
+                    {/* Budget progress bar */}
+                    {budget.tokensSpent > 0 && (
+                      <div className="w-full h-0.5 bg-white/5 rounded-full mt-1 overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.min(100, usedPct * 100)}%`,
+                            backgroundColor: budgetColor,
+                          }}
+                        />
+                      </div>
+                    )}
                   </div>
-                  {agent.status === 'working' && (
-                    <span className="text-[10px] text-blue-400 font-mono">{Math.round(agent.progress * 100)}%</span>
-                  )}
                 </div>
               </button>
             );

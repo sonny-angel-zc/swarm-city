@@ -7,6 +7,8 @@ import Sidebar from '@/components/Sidebar';
 import InspectPanel from '@/components/InspectPanel';
 import ActivityFeed from '@/components/ActivityFeed';
 import TaskInput from '@/components/TaskInput';
+import Treasury from '@/components/Treasury';
+import BudgetPanel from '@/components/BudgetPanel';
 
 export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -17,8 +19,10 @@ export default function Home() {
       <div className="flex-1 flex overflow-hidden relative">
         <div className="flex-1 relative">
           <CityCanvas />
+          <Treasury />
           <InspectPanel />
           <TaskInput />
+          <BudgetPanel />
         </div>
         {/* Desktop sidebar */}
         <div className="hidden md:flex">
