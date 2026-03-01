@@ -4,6 +4,14 @@ import {
   LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
 } from './types';
+import {
+  DocCategory,
+  DocumentMemoryItem,
+  PlanDocument,
+  extractMemoryCandidates,
+  getDocumentById,
+  getPlanRegistry,
+} from './planRegistry';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +53,12 @@ type SwarmStore = {
   // Economy
   economy: TokenEconomy;
   budgetPanelOpen: boolean;
+  // Docs
+  docsRegistry: PlanDocument[];
+  docsFilter: 'all' | DocCategory;
+  docsQuery: string;
+  selectedDocId: string | null;
+  documentMemory: DocumentMemoryItem[];
 
   // Actions
   selectAgent: (role: AgentRole | null) => void;
@@ -59,6 +73,14 @@ type SwarmStore = {
   spendTokens: (role: AgentRole, amount: number, type: TransactionType) => void;
   setAgentBudget: (role: AgentRole, budget: number) => void;
   setBudgetPanelOpen: (open: boolean) => void;
+  setDocsFilter: (filter: 'all' | DocCategory) => void;
+  setDocsQuery: (query: string) => void;
+  selectDocument: (docId: string | null) => void;
+  indexDocuments: () => void;
+  pinMemory: (item: DocumentMemoryItem) => void;
+  unpinMemory: (id: string) => void;
+  captureDocumentMemory: (docId: string) => void;
+  clearDocumentMemory: () => void;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -86,6 +108,7 @@ let vehicleIdCounter = 0;
 let notifIdCounter = 0;
 let transactionIdCounter = 0;
 let lastHistoryTime = 0;
+let memoryIdCounter = 0;
 
 function createInitialEconomy(): TokenEconomy {
   const agentBudgets: Partial<Record<AgentRole, AgentBudget>> = {};
@@ -126,10 +149,65 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   eventSource: null,
   economy: createInitialEconomy(),
   budgetPanelOpen: false,
+  docsRegistry: getPlanRegistry(),
+  docsFilter: 'all',
+  docsQuery: '',
+  selectedDocId: getPlanRegistry()[0]?.id ?? null,
+  documentMemory: [],
 
   selectAgent: (role) => set({ selectedAgent: role }),
   setOverlayMode: (mode) => set({ overlayMode: mode }),
   setBudgetPanelOpen: (open) => set({ budgetPanelOpen: open }),
+  setDocsFilter: (filter) => set({ docsFilter: filter }),
+  setDocsQuery: (query) => set({ docsQuery: query }),
+  selectDocument: (docId) => set({ selectedDocId: docId }),
+
+  indexDocuments: () => {
+    const docs = getPlanRegistry();
+    const current = get().selectedDocId;
+    const selectedStillExists = current ? docs.some((doc) => doc.id === current) : false;
+    set({
+      docsRegistry: docs,
+      selectedDocId: selectedStillExists ? current : (docs[0]?.id ?? null),
+    });
+  },
+
+  pinMemory: (item) => {
+    const state = get();
+    const alreadyPinned = state.documentMemory.some((entry) => entry.docId === item.docId && entry.snippet === item.snippet);
+    if (alreadyPinned) return;
+    const next: DocumentMemoryItem = {
+      ...item,
+      id: `${item.docId}-pin-${memoryIdCounter++}`,
+      createdAt: Date.now(),
+    };
+    set({ documentMemory: [next, ...state.documentMemory].slice(0, 40) });
+  },
+
+  unpinMemory: (id) => {
+    set({ documentMemory: get().documentMemory.filter((item) => item.id !== id) });
+  },
+
+  captureDocumentMemory: (docId) => {
+    const state = get();
+    const doc = getDocumentById(state.docsRegistry, docId);
+    if (!doc) return;
+    const candidates = extractMemoryCandidates(doc, 4);
+    const merged = [...state.documentMemory];
+    for (const candidate of candidates) {
+      const exists = merged.some((entry) => entry.docId === candidate.docId && entry.snippet === candidate.snippet);
+      if (!exists) {
+        merged.unshift({
+          ...candidate,
+          id: `${candidate.docId}-capture-${memoryIdCounter++}`,
+          createdAt: Date.now(),
+        });
+      }
+    }
+    set({ documentMemory: merged.slice(0, 40) });
+  },
+
+  clearDocumentMemory: () => set({ documentMemory: [] }),
 
   setAgentBudget: (role, budget) => {
     const economy = { ...get().economy };

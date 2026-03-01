@@ -2,6 +2,7 @@
 
 import { useSwarmStore } from '@/core/store';
 import { BUILDING_CONFIGS } from '@/core/types';
+import DocsPanel from '@/components/DocsPanel';
 
 const statusColors: Record<string, string> = {
   idle: 'bg-gray-500',
@@ -78,93 +79,97 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
         )}
       </div>
 
-      {/* Agents */}
-      <div className="p-4 border-b border-[#1e2a3a] flex-1 overflow-y-auto">
-        <h2 className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-3">Agents</h2>
-        <div className="space-y-2">
-          {BUILDING_CONFIGS.map(cfg => {
-            const agent = agents[cfg.role];
-            const budget = economy.agentBudgets[cfg.role];
-            const usedPct = budget.tokensSpent / budget.tokenBudget;
-            const budgetColor =
-              usedPct > 0.8 ? '#EF4444' :
-              usedPct > 0.5 ? '#F59E0B' :
-              cfg.color;
-            return (
-              <button
-                key={cfg.role}
-                onClick={() => selectAgent(cfg.role)}
-                className="w-full text-left p-2.5 rounded-lg bg-[#161b22] hover:bg-[#1c2333] border border-[#21262d] hover:border-[#30363d] transition-all group"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-base">{cfg.icon}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs font-medium text-white/80 group-hover:text-white/95 truncate">
-                        {cfg.buildingName}
+      <div className="flex-1 overflow-y-auto">
+        {/* Agents */}
+        <div className="p-4 border-b border-[#1e2a3a]">
+          <h2 className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-3">Agents</h2>
+          <div className="space-y-2">
+            {BUILDING_CONFIGS.map(cfg => {
+              const agent = agents[cfg.role];
+              const budget = economy.agentBudgets[cfg.role];
+              const usedPct = budget.tokensSpent / budget.tokenBudget;
+              const budgetColor =
+                usedPct > 0.8 ? '#EF4444' :
+                usedPct > 0.5 ? '#F59E0B' :
+                cfg.color;
+              return (
+                <button
+                  key={cfg.role}
+                  onClick={() => selectAgent(cfg.role)}
+                  className="w-full text-left p-2.5 rounded-lg bg-[#161b22] hover:bg-[#1c2333] border border-[#21262d] hover:border-[#30363d] transition-all group"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-base">{cfg.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-medium text-white/80 group-hover:text-white/95 truncate">
+                          {cfg.buildingName}
+                        </div>
+                        {budget.tokensSpent > 0 && (
+                          <span className="text-[9px] font-mono" style={{ color: budgetColor }}>
+                            {budget.tokensSpent.toLocaleString()}
+                          </span>
+                        )}
                       </div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agent.status]}`} />
+                        <span className="text-[10px] text-white/40">{statusLabels[agent.status]}</span>
+                        {agent.status === 'working' && (
+                          <span className="text-[10px] text-blue-400 font-mono ml-auto">{Math.round(agent.progress * 100)}%</span>
+                        )}
+                      </div>
+                      {/* Budget progress bar */}
                       {budget.tokensSpent > 0 && (
-                        <span className="text-[9px] font-mono" style={{ color: budgetColor }}>
-                          {budget.tokensSpent.toLocaleString()}
-                        </span>
+                        <div className="w-full h-0.5 bg-white/5 rounded-full mt-1 overflow-hidden">
+                          <div
+                            className="h-full rounded-full transition-all duration-300"
+                            style={{
+                              width: `${Math.min(100, usedPct * 100)}%`,
+                              backgroundColor: budgetColor,
+                            }}
+                          />
+                        </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agent.status]}`} />
-                      <span className="text-[10px] text-white/40">{statusLabels[agent.status]}</span>
-                      {agent.status === 'working' && (
-                        <span className="text-[10px] text-blue-400 font-mono ml-auto">{Math.round(agent.progress * 100)}%</span>
-                      )}
-                    </div>
-                    {/* Budget progress bar */}
-                    {budget.tokensSpent > 0 && (
-                      <div className="w-full h-0.5 bg-white/5 rounded-full mt-1 overflow-hidden">
-                        <div
-                          className="h-full rounded-full transition-all duration-300"
-                          style={{
-                            width: `${Math.min(100, usedPct * 100)}%`,
-                            backgroundColor: budgetColor,
-                          }}
-                        />
-                      </div>
-                    )}
                   </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Notifications */}
-      <div className="p-4 max-h-48 overflow-y-auto">
-        <h2 className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">
-          Notifications {unread.length > 0 && (
-            <span className="text-red-400 ml-1">({unread.length})</span>
-          )}
-        </h2>
-        {unread.length === 0 ? (
-          <p className="text-[11px] text-white/20 italic">All clear</p>
-        ) : (
-          <div className="space-y-1.5">
-            {unread.slice(-5).reverse().map(n => (
-              <div
-                key={n.id}
-                onClick={() => {
-                  dismissNotification(n.id);
-                  selectAgent(n.agentRole);
-                }}
-                className={`text-[11px] p-2 rounded cursor-pointer transition-colors ${
-                  n.type === 'review_needed'
-                    ? 'bg-red-500/10 border border-red-500/20 text-red-300 hover:bg-red-500/20'
-                    : 'bg-[#161b22] text-white/60 hover:bg-[#1c2333]'
-                }`}
-              >
-                {n.message}
-              </div>
-            ))}
+                </button>
+              );
+            })}
           </div>
-        )}
+        </div>
+
+        <DocsPanel />
+
+        {/* Notifications */}
+        <div className="p-4">
+          <h2 className="text-xs font-semibold text-white/40 uppercase tracking-wider mb-2">
+            Notifications {unread.length > 0 && (
+              <span className="text-red-400 ml-1">({unread.length})</span>
+            )}
+          </h2>
+          {unread.length === 0 ? (
+            <p className="text-[11px] text-white/20 italic">All clear</p>
+          ) : (
+            <div className="space-y-1.5">
+              {unread.slice(-5).reverse().map(n => (
+                <div
+                  key={n.id}
+                  onClick={() => {
+                    dismissNotification(n.id);
+                    selectAgent(n.agentRole);
+                  }}
+                  className={`text-[11px] p-2 rounded cursor-pointer transition-colors ${
+                    n.type === 'review_needed'
+                      ? 'bg-red-500/10 border border-red-500/20 text-red-300 hover:bg-red-500/20'
+                      : 'bg-[#161b22] text-white/60 hover:bg-[#1c2333]'
+                  }`}
+                >
+                  {n.message}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
