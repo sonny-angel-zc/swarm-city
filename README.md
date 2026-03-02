@@ -89,6 +89,8 @@ SWARM_CODEX_AGENT_MAP='{"default":"agent-default","engineer":"agent-eng","qa":"a
 
 - `npm run dev`: start Next.js dev server on port `3000` with Turbopack.
 - `npm run build`: production build.
+- `npm run typecheck`: offline-safe TypeScript validation (`validate-next-router-roots` + `tsc --noEmit`).
+- `TYPECHECK_RUN_NEXT_TYPEGEN=1 npm run typecheck`: additionally run optional `next typegen` before `tsc`.
 - `npm run start`: run production server.
 - `npm run validate:docs-registry`: verify docs registry metadata and markdown file paths in `src/core/planRegistry.ts`.
 - `npm run validate:next-router-roots`: ensure `app`/`pages` roots are not split between project root and `src` (prevents Next.js typegen path breakage).
