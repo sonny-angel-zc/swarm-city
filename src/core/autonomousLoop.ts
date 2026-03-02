@@ -1,6 +1,7 @@
 import path from 'path';
 import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType } from './linearServer';
 import { detectRetryKind, executeAutonomousTaskWithCodex, runCodexExec } from './orchestrator';
+import { checkDevServerHealth, performBootSelfHealing, requestDevServerRestart } from './selfHealing';
 
 type AutonomousEventType = 'info' | 'error' | 'warning';
 
@@ -38,10 +39,12 @@ export type AutonomousState = {
 
 type Runtime = {
   started: boolean;
+  bootRecoveryDone: boolean;
   timer: NodeJS.Timeout | null;
   state: AutonomousState;
   eventId: number;
   lock: boolean;
+  consecutiveErrors: number;
 };
 
 const DEFAULT_INTERVAL_MS = Number(process.env.SWARM_AUTONOMOUS_INTERVAL_MS ?? '60000');
@@ -103,10 +106,12 @@ function createInitialState(): AutonomousState {
 if (!globalRuntime.__swarmAutonomousRuntime) {
   globalRuntime.__swarmAutonomousRuntime = {
     started: false,
+    bootRecoveryDone: false,
     timer: null,
     state: createInitialState(),
     eventId: 0,
     lock: false,
+    consecutiveErrors: 0,
   };
 }
 
@@ -224,6 +229,13 @@ async function tickLoop() {
       addEvent(`Backlog seed complete (${seed.created} created, ${seed.skipped} already existed).`);
     }
 
+    const health = await checkDevServerHealth();
+    if (!health.ok) {
+      requestDevServerRestart(`autonomous pre-task health failed (${health.error ?? 'unhealthy'})`);
+      addEvent(`Dev server health check failed (${health.error ?? 'unhealthy'}). Requested supervised restart.`, 'warning');
+      return;
+    }
+
     const issue = await getTopTodoIssue(LINEAR_TEAM_ID);
     if (!issue) {
       rt.state.currentTask = null;
@@ -302,11 +314,28 @@ async function tickLoop() {
     if (generatedCount > 0) {
       addEvent(`Generated ${generatedCount} follow-up improvement task(s).`);
     }
-  } catch (err) {
-    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
   } finally {
     rt.state.running = false;
     rt.lock = false;
+  }
+}
+
+async function safeTick() {
+  const rt = runtime();
+  try {
+    await tickLoop();
+    rt.consecutiveErrors = 0;
+  } catch (err) {
+    rt.consecutiveErrors += 1;
+    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
+    if (rt.consecutiveErrors >= 3) {
+      const cooldownMs = 2 * 60 * 1000;
+      rt.state.paused = true;
+      rt.state.cooldownUntil = Date.now() + cooldownMs;
+      rt.state.pauseReason = 'Paused after 3 consecutive autonomous errors.';
+      addEvent(`Autonomous loop paused for ${cooldownMs / 1000}s after 3 consecutive errors.`, 'warning');
+      rt.consecutiveErrors = 0;
+    }
   }
 }
 
@@ -315,10 +344,14 @@ export function startAutonomousLoop() {
   if (rt.started) return;
   rt.started = true;
   addEvent('Autonomous loop booted.');
+  if (!rt.bootRecoveryDone) {
+    rt.bootRecoveryDone = true;
+    void performBootSelfHealing((message, type = 'info') => addEvent(message, type));
+  }
 
   if (!rt.state.enabled) return;
-  void tickLoop();
-  rt.timer = setInterval(() => { void tickLoop(); }, rt.state.intervalMs);
+  void safeTick();
+  rt.timer = setInterval(() => { void safeTick(); }, rt.state.intervalMs);
 }
 
 function restartTimer() {
@@ -328,7 +361,7 @@ function restartTimer() {
     rt.timer = null;
   }
   if (!rt.state.enabled) return;
-  rt.timer = setInterval(() => { void tickLoop(); }, rt.state.intervalMs);
+  rt.timer = setInterval(() => { void safeTick(); }, rt.state.intervalMs);
 }
 
 export function setAutonomousEnabled(enabled: boolean) {
@@ -340,7 +373,7 @@ export function setAutonomousEnabled(enabled: boolean) {
     rt.state.cooldownUntil = null;
     rt.state.pauseReason = null;
     restartTimer();
-    void tickLoop();
+    void safeTick();
   } else {
     addEvent('Autonomous mode paused by user.', 'warning');
     if (rt.timer) {
@@ -360,5 +393,22 @@ export function getAutonomousState(sinceEventId?: number): AutonomousState {
     events,
     completedTasks: [...state.completedTasks],
     currentTask: state.currentTask ? { ...state.currentTask } : null,
+  };
+}
+
+export function getAutonomousHealth() {
+  const rt = runtime();
+  return {
+    ok: rt.started,
+    started: rt.started,
+    enabled: rt.state.enabled,
+    running: rt.state.running,
+    paused: rt.state.paused,
+    pauseReason: rt.state.pauseReason,
+    consecutiveErrors: rt.consecutiveErrors,
+    lastTickAt: rt.state.lastTickAt,
+    timestamp: Date.now(),
+    pid: process.pid,
+    uptimeSec: Math.floor(process.uptime()),
   };
 }

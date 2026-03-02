@@ -8,6 +8,7 @@ export type LinearIssue = {
   description: string | null;
   priority: number | null;
   url: string;
+  startedAt: string | null;
   updatedAt: string;
   state: {
     id: string;
@@ -65,6 +66,7 @@ const QUERIES = {
           description
           priority
           url
+          startedAt
           updatedAt
           state { id name type }
           labels { nodes { id name } }
@@ -94,6 +96,7 @@ const QUERIES = {
         description
         priority
         url
+        startedAt
         updatedAt
         state { id name type }
         labels { nodes { id name } }
