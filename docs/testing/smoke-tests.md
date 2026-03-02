@@ -38,6 +38,8 @@ npm run test:smoke
 
 Each smoke run now starts with `test:smoke:preflight`, which fails fast on missing tooling, dirty git worktrees, invalid `SMOKE_HOST`/`SMOKE_PORT`, missing dependencies, or server startup/readiness errors.
 
+For automation and external tooling, see the stderr parsing contract: `docs/references/preflight-stderr-contract.md`.
+
 ## CI-equivalent run
 
 Run with CI semantics (single worker, zero retries):
