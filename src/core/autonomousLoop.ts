@@ -1,3 +1,5 @@
+import { execFileSync } from 'child_process';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import path from 'path';
 import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType } from './linearServer';
 import { detectRetryKind, executeAutonomousTaskWithCodex, runCodexExec } from './orchestrator';
@@ -38,16 +40,22 @@ export type AutonomousState = {
 
 type Runtime = {
   started: boolean;
+  bootstrapped: boolean;
   timer: NodeJS.Timeout | null;
   state: AutonomousState;
   eventId: number;
   lock: boolean;
+  consecutiveErrors: number;
 };
 
 const DEFAULT_INTERVAL_MS = Number(process.env.SWARM_AUTONOMOUS_INTERVAL_MS ?? '60000');
 const DEFAULT_COOLDOWN_MS = Number(process.env.SWARM_AUTONOMOUS_COOLDOWN_MS ?? '90000');
 const DEFAULT_ENABLED = (process.env.SWARM_AUTONOMOUS_DEFAULT_ON ?? 'true').toLowerCase() !== 'false';
 const PROJECT_ROOT = path.resolve(process.cwd());
+const STUCK_STARTED_MS = 10 * 60 * 1000;
+const ERROR_BACKOFF_MS = 2 * 60 * 1000;
+const DEV_HEALTH_URL = process.env.SWARM_DEV_HEALTH_URL ?? 'http://127.0.0.1:3000/api/autonomous/health';
+const SUPERVISOR_REQUEST_FILE = path.join(PROJECT_ROOT, '.swarm-supervisor', 'restart-request.json');
 
 const SEED_TASKS: Array<{ title: string; description: string; priority: number }> = [
   {
@@ -103,10 +111,12 @@ function createInitialState(): AutonomousState {
 if (!globalRuntime.__swarmAutonomousRuntime) {
   globalRuntime.__swarmAutonomousRuntime = {
     started: false,
+    bootstrapped: false,
     timer: null,
     state: createInitialState(),
     eventId: 0,
     lock: false,
+    consecutiveErrors: 0,
   };
 }
 
@@ -123,6 +133,10 @@ function addEvent(message: string, type: AutonomousEventType = 'info') {
   ].slice(-300);
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
 function toPriorityValue(priority: string): number {
   return priority === 'P2' ? 3 : 4;
 }
@@ -130,6 +144,232 @@ function toPriorityValue(priority: string): number {
 function normalizePriority(raw: unknown): 'P2' | 'P3' {
   const text = String(raw ?? '').toUpperCase();
   return text.includes('P2') ? 'P2' : 'P3';
+}
+
+function processExists(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasActiveCodexProcess(): boolean {
+  try {
+    const output = execFileSync('ps', ['-axo', 'command='], { encoding: 'utf8' });
+    return output
+      .split('\n')
+      .map((line) => line.trim().toLowerCase())
+      .some((line) => line.includes('codex') && line.includes('exec'));
+  } catch {
+    return false;
+  }
+}
+
+function findSwarmWorktreeRoot(): string | null {
+  const marker = `${path.sep}swarm-worktrees${path.sep}`;
+  const idx = PROJECT_ROOT.indexOf(marker);
+  if (idx < 0) return null;
+  return PROJECT_ROOT.slice(0, idx + marker.length - 1);
+}
+
+function getGitRoot(): string | null {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: PROJECT_ROOT, encoding: 'utf8' }).trim();
+  } catch {
+    return null;
+  }
+}
+
+function getBranchForWorktree(worktreePath: string): string | null {
+  try {
+    const branch = execFileSync('git', ['-C', worktreePath, 'rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8' }).trim();
+    return branch.length > 0 ? branch : null;
+  } catch {
+    return null;
+  }
+}
+
+function tryDeleteLocalBranch(gitRoot: string, branch: string) {
+  if (!branch || branch === 'HEAD' || branch === 'main' || branch === 'master') return;
+  try {
+    execFileSync('git', ['branch', '-D', branch], { cwd: gitRoot, stdio: 'ignore' });
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+function removeWorktree(gitRoot: string | null, worktreePath: string) {
+  if (gitRoot) {
+    try {
+      execFileSync('git', ['worktree', 'remove', '--force', worktreePath], { cwd: gitRoot, stdio: 'ignore' });
+      return;
+    } catch {
+      // Fall through to filesystem delete.
+    }
+  }
+
+  try {
+    rmSync(worktreePath, { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
+async function recoverStuckStartedIssues() {
+  const issues = await listLinearIssues(LINEAR_TEAM_ID);
+  const now = Date.now();
+  const stuck = issues.filter((issue) => {
+    const stateType = issue.state?.type ?? '';
+    if (stateType !== 'started') return false;
+    const startedAt = new Date(issue.updatedAt).getTime();
+    return Number.isFinite(startedAt) && now - startedAt > STUCK_STARTED_MS;
+  });
+
+  if (stuck.length === 0) return;
+
+  if (hasActiveCodexProcess()) {
+    addEvent(`Found ${stuck.length} started issue(s) older than 10m, but Codex is active so recovery was skipped.`, 'warning');
+    return;
+  }
+
+  let recovered = 0;
+  for (const issue of stuck) {
+    const ok = await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
+    if (ok) recovered += 1;
+  }
+
+  if (recovered > 0) {
+    addEvent(`Recovered ${recovered} stuck started issue(s) to unstarted.`);
+  }
+}
+
+type WorktreeRunMeta = {
+  ownerPid?: number;
+  issueIdentifier?: string;
+};
+
+function readRunMeta(runPath: string): WorktreeRunMeta | null {
+  const metaPath = path.join(runPath, '.swarm-run.json');
+  if (!existsSync(metaPath)) return null;
+
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf8')) as WorktreeRunMeta;
+  } catch {
+    return null;
+  }
+}
+
+async function cleanupOrphanedWorktrees() {
+  const worktreeRoot = findSwarmWorktreeRoot();
+  if (!worktreeRoot || !existsSync(worktreeRoot)) return;
+
+  const issues = await listLinearIssues(LINEAR_TEAM_ID);
+  const statusByIdentifier = new Map<string, string>();
+  for (const issue of issues) {
+    statusByIdentifier.set(issue.identifier.toUpperCase(), issue.state?.type ?? '');
+  }
+
+  const gitRoot = getGitRoot();
+  let pruned = 0;
+  let branchesDeleted = 0;
+
+  const issueDirs = readdirSync(worktreeRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  for (const issueDir of issueDirs) {
+    const issuePath = path.join(worktreeRoot, issueDir.name);
+    const runDirs = readdirSync(issuePath, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+
+    for (const runDir of runDirs) {
+      const runPath = path.join(issuePath, runDir.name);
+      const meta = readRunMeta(runPath);
+      if (!meta) continue;
+
+      if (meta.ownerPid && processExists(meta.ownerPid)) {
+        continue;
+      }
+
+      const issueStatus = statusByIdentifier.get(String(meta.issueIdentifier ?? '').toUpperCase()) ?? '';
+      const shouldDeleteBranch = issueStatus === 'completed' || issueStatus === 'canceled';
+
+      const branch = shouldDeleteBranch ? getBranchForWorktree(runPath) : null;
+      removeWorktree(gitRoot, runPath);
+      pruned += 1;
+
+      if (shouldDeleteBranch && branch && gitRoot) {
+        tryDeleteLocalBranch(gitRoot, branch);
+        branchesDeleted += 1;
+      }
+    }
+  }
+
+  if (pruned > 0 || branchesDeleted > 0) {
+    addEvent(`Worktree cleanup pruned ${pruned} stale run(s) and deleted ${branchesDeleted} completed/canceled branch(es).`);
+  }
+}
+
+async function probeDevHealth(timeoutMs = 3000): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(DEV_HEALTH_URL, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    return res.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function requestDevServerRestart(reason: string) {
+  const dir = path.dirname(SUPERVISOR_REQUEST_FILE);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    SUPERVISOR_REQUEST_FILE,
+    JSON.stringify({ requestedAt: new Date().toISOString(), reason }),
+  );
+}
+
+async function ensureDevServerHealthy(): Promise<boolean> {
+  if (await probeDevHealth()) return true;
+
+  addEvent('Dev server health check failed before task start; requesting restart.', 'warning');
+  requestDevServerRestart('autonomous pre-task health check failed');
+
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await delay(5_000);
+    if (await probeDevHealth()) {
+      addEvent('Dev server recovered after supervised restart.');
+      return true;
+    }
+  }
+
+  addEvent('Dev server did not recover within 90s; skipping task this tick.', 'error');
+  return false;
+}
+
+async function bootRecovery() {
+  const rt = runtime();
+  if (rt.bootstrapped) return;
+  rt.bootstrapped = true;
+
+  try {
+    await recoverStuckStartedIssues();
+  } catch (err) {
+    addEvent(`Failed stuck-task recovery: ${String(err)}`, 'error');
+  }
+
+  try {
+    await cleanupOrphanedWorktrees();
+  } catch (err) {
+    addEvent(`Failed orphaned-worktree cleanup: ${String(err)}`, 'error');
+  }
 }
 
 async function generateImprovements(summary: string): Promise<Array<{ title: string; description: string; priority: 'P2' | 'P3' }>> {
@@ -197,7 +437,7 @@ export async function seedAutonomousBacklog(): Promise<{ created: number; skippe
   return { created, skipped };
 }
 
-async function tickLoop() {
+async function tickLoopInner() {
   const rt = runtime();
   if (!rt.state.enabled || rt.lock) return;
 
@@ -229,6 +469,9 @@ async function tickLoop() {
       rt.state.currentTask = null;
       return;
     }
+
+    const healthy = await ensureDevServerHealthy();
+    if (!healthy) return;
 
     rt.state.currentTask = {
       issueId: issue.id,
@@ -302,11 +545,28 @@ async function tickLoop() {
     if (generatedCount > 0) {
       addEvent(`Generated ${generatedCount} follow-up improvement task(s).`);
     }
-  } catch (err) {
-    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
   } finally {
     rt.state.running = false;
     rt.lock = false;
+  }
+}
+
+async function tickLoop() {
+  const rt = runtime();
+  try {
+    await tickLoopInner();
+    rt.consecutiveErrors = 0;
+  } catch (err) {
+    rt.consecutiveErrors += 1;
+    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
+
+    if (rt.consecutiveErrors >= 3) {
+      rt.state.paused = true;
+      rt.state.cooldownUntil = Date.now() + ERROR_BACKOFF_MS;
+      rt.state.pauseReason = 'Too many consecutive loop errors. Cooling down before retry.';
+      addEvent('Autonomous loop hit 3 consecutive errors; pausing for 120s before auto-resume.', 'warning');
+      rt.consecutiveErrors = 0;
+    }
   }
 }
 
@@ -315,6 +575,8 @@ export function startAutonomousLoop() {
   if (rt.started) return;
   rt.started = true;
   addEvent('Autonomous loop booted.');
+
+  void bootRecovery();
 
   if (!rt.state.enabled) return;
   void tickLoop();
@@ -360,5 +622,22 @@ export function getAutonomousState(sinceEventId?: number): AutonomousState {
     events,
     completedTasks: [...state.completedTasks],
     currentTask: state.currentTask ? { ...state.currentTask } : null,
+  };
+}
+
+export function getAutonomousHealth() {
+  const rt = runtime();
+  return {
+    ok: true,
+    timestamp: Date.now(),
+    started: rt.started,
+    enabled: rt.state.enabled,
+    running: rt.state.running,
+    paused: rt.state.paused,
+    pauseReason: rt.state.pauseReason,
+    cooldownUntil: rt.state.cooldownUntil,
+    lastTickAt: rt.state.lastTickAt,
+    consecutiveErrors: rt.consecutiveErrors,
+    activeTask: rt.state.currentTask,
   };
 }
