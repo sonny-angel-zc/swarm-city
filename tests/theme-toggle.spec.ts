@@ -9,6 +9,12 @@ type ContrastProbe = {
   minimumRatio: number;
 };
 
+type ElementContrastProbe = {
+  id: string;
+  selector: string;
+  minimumRatio: number;
+};
+
 type ResolvedProbe = {
   id: string;
   foregroundVar: string;
@@ -17,7 +23,23 @@ type ResolvedProbe = {
   bg: string;
 };
 
-const KEY_CONTRAST_PROBES: ContrastProbe[] = [
+type ResolvedElementProbe = {
+  id: string;
+  selector: string;
+  fg: string;
+  bg: string;
+};
+
+const THEME_STORAGE_KEY = 'swarm:theme';
+const LAST_TASK_STORAGE_KEY = 'swarm:lastTaskId';
+const TEST_IDS = {
+  taskInput: 'task-input',
+  createTaskButton: 'create-task-button',
+  modelPresetSelect: 'model-preset-select',
+  themeToggleSwitch: 'theme-toggle-switch',
+} as const;
+
+const TOKEN_CONTRAST_PROBES: ContrastProbe[] = [
   {
     id: 'body-primary-on-canvas',
     foregroundVar: '--text-primary',
@@ -36,10 +58,12 @@ const KEY_CONTRAST_PROBES: ContrastProbe[] = [
     backgroundVar: '--bg-panel',
     minimumRatio: 4.5,
   },
+];
+
+const ELEMENT_CONTRAST_PROBES: ElementContrastProbe[] = [
   {
     id: 'theme-toggle-text-on-toggle-bg',
-    foregroundVar: '--theme-toggle-text',
-    backgroundVar: '--theme-toggle-bg',
+    selector: '[data-testid="theme-toggle-switch"]',
     minimumRatio: 4.5,
   },
 ];
@@ -107,15 +131,37 @@ async function resolveContrastProbes(page: import('playwright/test').Page, probe
   }, probes);
 }
 
+async function resolveElementContrastProbes(
+  page: import('playwright/test').Page,
+  probes: ElementContrastProbe[],
+): Promise<ResolvedElementProbe[]> {
+  return page.evaluate((probeList: ElementContrastProbe[]) => {
+    return probeList.map((probe) => {
+      const element = document.querySelector<HTMLElement>(probe.selector);
+      if (!element) {
+        throw new Error(`Contrast probe element not found for selector: ${probe.selector}`);
+      }
+
+      const style = window.getComputedStyle(element);
+      return {
+        id: probe.id,
+        selector: probe.selector,
+        fg: style.color,
+        bg: style.backgroundColor,
+      };
+    });
+  }, probes);
+}
+
 async function focusThemeToggleViaTab(page: import('playwright/test').Page) {
-  const taskInput = page.getByPlaceholder('Enter a task for the swarm to execute...');
-  const createTaskButton = page.getByRole('button', { name: 'Create Task →' });
-  const presetSelect = page.getByRole('combobox', { name: 'Preset' });
-  const toggle = page.getByRole('switch');
+  const taskInput = page.getByTestId(TEST_IDS.taskInput);
+  const createTaskButton = page.getByTestId(TEST_IDS.createTaskButton);
+  const presetSelect = page.getByTestId(TEST_IDS.modelPresetSelect);
+  const toggle = page.getByTestId(TEST_IDS.themeToggleSwitch);
 
   await expect(taskInput).toBeVisible();
   await expect(createTaskButton).toBeVisible();
-  await expect(presetSelect).toBeVisible();
+  await expect(presetSelect).toHaveCount(1);
   await expect(toggle).toBeVisible();
   await page.evaluate(() => {
     const active = document.activeElement as HTMLElement | null;
@@ -126,12 +172,134 @@ async function focusThemeToggleViaTab(page: import('playwright/test').Page) {
   await expect(taskInput).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(createTaskButton).toBeFocused();
-  await page.keyboard.press('Tab');
-  await expect(presetSelect).toBeFocused();
+  if (await presetSelect.isVisible()) {
+    await page.keyboard.press('Tab');
+    await expect(presetSelect).toBeFocused();
+  }
   await page.keyboard.press('Tab');
   await expect(toggle).toBeFocused();
 
   return toggle;
+}
+
+async function mockDashboardBootstrap(page: import('playwright/test').Page) {
+  await page.route('**/api/limits', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        provider: 'playwright',
+        plan: 'test',
+        tokensPerMin: 50000,
+      }),
+    });
+  });
+
+  await page.route('**/api/autonomous**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: false,
+        running: false,
+        paused: false,
+        pauseReason: null,
+        cooldownUntil: null,
+        intervalMs: 60000,
+        currentTask: null,
+        completedTasks: [],
+        events: [],
+        seeded: false,
+        lastTickAt: null,
+      }),
+    });
+  });
+
+  await page.route('**/api/linear', async (route) => {
+    const payload = route.request().postDataJSON() as { action?: string };
+    const action = payload.action;
+
+    if (action === 'list') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            team: {
+              issues: {
+                nodes: [],
+              },
+            },
+          },
+        }),
+      });
+      return;
+    }
+
+    if (action === 'states') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            team: {
+              states: {
+                nodes: [
+                  { id: 'state-backlog', name: 'Backlog', type: 'backlog', position: 0 },
+                  { id: 'state-started', name: 'In Progress', type: 'started', position: 1 },
+                  { id: 'state-done', name: 'Done', type: 'completed', position: 2 },
+                ],
+              },
+            },
+          },
+        }),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data: {} }),
+    });
+  });
+}
+
+async function gotoDashboard(page: import('playwright/test').Page) {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId(TEST_IDS.themeToggleSwitch)).toBeVisible();
+  await expect(page.getByText('Loading swarm control plane...')).toHaveCount(0);
+}
+
+async function expectThemeState(
+  page: import('playwright/test').Page,
+  expectedTheme: ThemeName,
+  options?: { persistedTheme?: ThemeName | null },
+) {
+  const toggle = page.getByTestId(TEST_IDS.themeToggleSwitch);
+  const isDarkTheme = expectedTheme === 'dark';
+
+  await expect(page.locator('html')).toHaveAttribute('data-theme', expectedTheme);
+  if (isDarkTheme) {
+    await expect(page.locator('html')).toHaveClass(/dark/);
+  } else {
+    await expect(page.locator('html')).not.toHaveClass(/dark/);
+  }
+
+  await expect(toggle).toHaveAttribute('role', 'switch');
+  await expect(toggle).toHaveAttribute('aria-checked', String(isDarkTheme));
+  await expect(toggle).toHaveAttribute(
+    'aria-label',
+    isDarkTheme ? 'Switch to light mode' : 'Switch to dark mode',
+  );
+
+  if (options && Object.prototype.hasOwnProperty.call(options, 'persistedTheme')) {
+    await expect
+      .poll(async () =>
+        page.evaluate((storageKey) => window.localStorage.getItem(storageKey), THEME_STORAGE_KEY),
+      )
+      .toBe(options.persistedTheme);
+  }
 }
 
 async function expectThemeToggleState(
@@ -151,11 +319,21 @@ async function expectThemeToggleState(
 }
 
 test.describe('dashboard theme toggle', () => {
-  test('defaults to dark mode when there is no stored preference', async ({ page }) => {
-    await page.goto('/');
+  test.beforeEach(async ({ context, page }) => {
+    await context.clearCookies();
+    await page.addInitScript(
+      ({ themeStorageKey, lastTaskStorageKey }) => {
+        window.localStorage.removeItem(themeStorageKey);
+        window.localStorage.removeItem(lastTaskStorageKey);
+      },
+      { themeStorageKey: THEME_STORAGE_KEY, lastTaskStorageKey: LAST_TASK_STORAGE_KEY },
+    );
+    await mockDashboardBootstrap(page);
+  });
 
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    await expect(page.locator('html')).toHaveClass(/dark/);
+  test('defaults to dark mode when there is no stored preference', async ({ page }) => {
+    await gotoDashboard(page);
+    await expectThemeState(page, 'dark', { persistedTheme: null });
   });
 
   test('restores a persisted light mode preference on load', async ({ page }) => {
@@ -163,10 +341,8 @@ test.describe('dashboard theme toggle', () => {
       window.localStorage.setItem('swarm:theme', 'light');
     });
 
-    await page.goto('/');
-
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-    await expect(page.locator('html')).not.toHaveClass(/dark/);
+    await gotoDashboard(page);
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
   });
 
   test('falls back to dark mode for an invalid stored preference', async ({ page }) => {
@@ -174,40 +350,40 @@ test.describe('dashboard theme toggle', () => {
       window.localStorage.setItem('swarm:theme', 'invalid-theme');
     });
 
-    await page.goto('/');
-
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    await expect(page.locator('html')).toHaveClass(/dark/);
+    await gotoDashboard(page);
+    await expectThemeState(page, 'dark');
     await expect
       .poll(async () =>
-        page.evaluate(() => window.localStorage.getItem('swarm:theme')),
+        page.evaluate((storageKey) => window.localStorage.getItem(storageKey), THEME_STORAGE_KEY),
       )
       .toBe('invalid-theme');
   });
 
   test('toggles theme and persists to localStorage', async ({ page }) => {
-    await page.goto('/');
+    await gotoDashboard(page);
 
-    const toggle = page.getByRole('switch', { name: 'Switch to light mode' });
+    const toggle = page.getByTestId(TEST_IDS.themeToggleSwitch);
+    await expectThemeState(page, 'dark', { persistedTheme: null });
     await toggle.click();
 
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-    await expect(page.locator('html')).not.toHaveClass(/dark/);
-    await expect
-      .poll(async () =>
-        page.evaluate(() => window.localStorage.getItem('swarm:theme')),
-      )
-      .toBe('light');
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
+
+    await toggle.click();
+    await expectThemeState(page, 'dark', { persistedTheme: 'dark' });
+
+    await toggle.click();
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
 
     await page.reload();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-    await expect(page.locator('html')).not.toHaveClass(/dark/);
+    await expect(page.getByTestId(TEST_IDS.themeToggleSwitch)).toBeVisible();
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
   });
 
   test('TT-A11Y-02 keeps switch semantics and updates ARIA state on repeated interactions', async ({ page }) => {
-    await page.goto('/');
+    await gotoDashboard(page);
 
-    const toggle = page.getByRole('switch');
+    const toggle = page.getByTestId(TEST_IDS.themeToggleSwitch);
+    await expect(toggle).toHaveAttribute('role', 'switch');
     let expectedTheme: 'dark' | 'light' = 'dark';
     await expectThemeToggleState(page, toggle, expectedTheme);
 
@@ -219,7 +395,7 @@ test.describe('dashboard theme toggle', () => {
   });
 
   test('TT-A11Y-01 moves focus to theme toggle using keyboard-only Tab navigation', async ({ page }) => {
-    await page.goto('/');
+    await gotoDashboard(page);
 
     const toggle = await focusThemeToggleViaTab(page);
     await expect(toggle).toHaveAttribute('role', 'switch');
@@ -229,55 +405,42 @@ test.describe('dashboard theme toggle', () => {
   });
 
   test('TT-A11Y-03 toggles theme with Space key from dark to light with deterministic state updates', async ({ page }) => {
-    await page.goto('/');
+    await gotoDashboard(page);
 
     const toggle = await focusThemeToggleViaTab(page);
+    await expect(toggle).toHaveAttribute('role', 'switch');
+    await expect(toggle).toHaveAttribute('aria-checked', 'true');
     await expect(toggle).toHaveAccessibleName('Switch to light mode');
+    await expectThemeState(page, 'dark', { persistedTheme: null });
 
     await toggle.press('Space');
-    await expect(toggle).toHaveAttribute('aria-checked', 'false');
-    await expect(toggle).toHaveAttribute('aria-label', 'Switch to dark mode');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-    await expect(page.locator('html')).not.toHaveClass(/dark/);
-    await expect
-      .poll(async () =>
-        page.evaluate(() => window.localStorage.getItem('swarm:theme')),
-      )
-      .toBe('light');
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
   });
 
   test('TT-A11Y-04 toggles theme with Enter key from light to dark with deterministic state updates', async ({ page }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem('swarm:theme', 'light');
     });
-    await page.goto('/');
+    await gotoDashboard(page);
 
     const toggle = await focusThemeToggleViaTab(page);
+    await expect(toggle).toHaveAttribute('role', 'switch');
     await expect(toggle).toHaveAccessibleName('Switch to dark mode');
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-    await expect(page.locator('html')).not.toHaveClass(/dark/);
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
 
     await toggle.press('Enter');
-    await expect(toggle).toHaveAttribute('aria-checked', 'true');
-    await expect(toggle).toHaveAttribute('aria-label', 'Switch to light mode');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-    await expect(page.locator('html')).toHaveClass(/dark/);
-    await expect
-      .poll(async () =>
-        page.evaluate(() => window.localStorage.getItem('swarm:theme')),
-      )
-      .toBe('dark');
+    await expectThemeState(page, 'dark', { persistedTheme: 'dark' });
   });
 
   test('TT-A11Y-05/TT-A11Y-06 meets WCAG AA contrast thresholds for key theme foreground/background combinations', async ({ page }) => {
-    await page.goto('/');
-    const toggle = page.getByRole('switch', { name: 'Switch to light mode' });
+    await gotoDashboard(page);
+    const toggle = page.getByTestId(TEST_IDS.themeToggleSwitch);
 
     const assertThemeContrast = async (theme: ThemeName) => {
-      const resolvedProbes = await resolveContrastProbes(page, KEY_CONTRAST_PROBES);
-      for (const probe of resolvedProbes) {
-        const config = KEY_CONTRAST_PROBES.find((candidate) => candidate.id === probe.id);
+      const resolvedTokenProbes = await resolveContrastProbes(page, TOKEN_CONTRAST_PROBES);
+      for (const probe of resolvedTokenProbes) {
+        const config = TOKEN_CONTRAST_PROBES.find((candidate) => candidate.id === probe.id);
         if (!config) {
           throw new Error(`Missing contrast probe configuration for ${probe.id}`);
         }
@@ -289,13 +452,28 @@ test.describe('dashboard theme toggle', () => {
             + `${probe.fg} on ${probe.bg} = ${ratio.toFixed(2)}:1, expected >= ${config.minimumRatio}:1`,
         ).toBeGreaterThanOrEqual(config.minimumRatio);
       }
+
+      const resolvedElementProbes = await resolveElementContrastProbes(page, ELEMENT_CONTRAST_PROBES);
+      for (const probe of resolvedElementProbes) {
+        const config = ELEMENT_CONTRAST_PROBES.find((candidate) => candidate.id === probe.id);
+        if (!config) {
+          throw new Error(`Missing element contrast probe configuration for ${probe.id}`);
+        }
+
+        const ratio = contrastRatio(parseRgb(probe.fg), parseRgb(probe.bg));
+        expect(
+          ratio,
+          `${theme} theme element contrast failure for "${probe.id}" (${probe.selector}): `
+            + `${probe.fg} on ${probe.bg} = ${ratio.toFixed(2)}:1, expected >= ${config.minimumRatio}:1`,
+        ).toBeGreaterThanOrEqual(config.minimumRatio);
+      }
     };
 
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await expectThemeState(page, 'dark', { persistedTheme: null });
     await assertThemeContrast('dark');
 
     await toggle.click();
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    await expectThemeState(page, 'light', { persistedTheme: 'light' });
     await assertThemeContrast('light');
   });
 });

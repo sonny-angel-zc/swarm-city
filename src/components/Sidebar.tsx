@@ -121,6 +121,44 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
               </div>
             )}
           </div>
+        ) : autonomous.enabled && autonomous.currentTask ? (
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-400">{autonomous.currentTask.identifier}</span>
+              <span className="text-[10px] text-[var(--text-secondary)]">Autonomous</span>
+            </div>
+            <p className="text-sm font-medium mb-2 truncate" title={autonomous.currentTask.title}>{autonomous.currentTask.title}</p>
+            {(() => {
+              const agentStatuses = Object.entries(agents).filter(([, a]) => a.status === 'working' || a.status === 'needs_input');
+              const totalTokens = Object.values(agents).reduce((sum, a) => sum + ((a as Record<string, unknown>)._tokensUsed as number || 0), 0);
+              const costEstimate = totalTokens * 0.000003; // rough $/token for codex
+              return (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-[var(--text-secondary)]">Tokens</span>
+                    <span className="font-mono text-blue-400">{totalTokens >= 1000 ? `${(totalTokens / 1000).toFixed(0)}k` : totalTokens}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-[var(--text-secondary)]">Est. Cost</span>
+                    <span className="font-mono text-green-400">${costEstimate.toFixed(4)}</span>
+                  </div>
+                  {agentStatuses.length > 0 && (
+                    <div className="space-y-1 pt-1 border-t border-[var(--border-subtle)]">
+                      {agentStatuses.map(([role, a]) => (
+                        <div key={role} className="flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                          <span className="text-[10px] text-[var(--text-secondary)] capitalize">{a.building.buildingName}</span>
+                          {a.currentTask && (
+                            <span className="text-[10px] text-blue-400 font-mono ml-auto truncate max-w-[100px]">{(a as Record<string, unknown>)._tokensUsed as number >= 1000 ? `${(((a as Record<string, unknown>)._tokensUsed as number) / 1000).toFixed(0)}k` : (a as Record<string, unknown>)._tokensUsed} tok</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
         ) : (
           <p className="text-xs text-[var(--text-secondary)] italic">No active task. Submit one above.</p>
         )}

@@ -2,25 +2,41 @@
 
 ## Scope
 
-This matrix defines subtask 2/7 for SWA-65: end-to-end scenarios and assertions for the dashboard theme toggle accessibility behavior.
+This matrix defines SWA-65 subtask 2/8: a concrete, executable accessibility assertion set for the dashboard theme toggle.
 
-## Test Matrix
+## Core Assertion Matrix
 
-| ID | Scenario | Assertions | Pass Criteria | Fail Criteria |
+| ID | Focus Area | Preconditions | Interaction | Required Assertions | Pass Criteria | Fail Criteria |
+| --- | --- | --- | --- | --- | --- | --- |
+| `TT-A11Y-01` | Tab focus behavior | Initial page load in default theme. | Press `Tab` repeatedly from no focused element. | Focus order is: task input -> create task button -> preset select -> theme toggle. Toggle receives visible keyboard focus. | Theme toggle is reachable in expected top-bar keyboard order without pointer input. | Toggle is skipped, unreachable, or appears before required controls. |
+| `TT-A11Y-02` | Switch semantics | Toggle rendered in DOM (dark or light state). | Query with `getByRole('switch')`. | Toggle exposes `role="switch"` and state-reflective accessible name (`Switch to light mode` when dark, `Switch to dark mode` when light). | Semantic role and label are present and valid for both states. | Missing role/label or stale label that does not reflect next action. |
+| `TT-A11Y-03` | Keyboard activation with `Space` | Toggle focused, starting in dark theme. | Press `Space`. | `aria-checked` transitions `true -> false`; root `data-theme` transitions `dark -> light`; accessible label updates to `Switch to dark mode`. | ARIA state, theme state, and label transition together after `Space`. | State fails to toggle or ARIA/theme/label become inconsistent. |
+| `TT-A11Y-04` | Keyboard activation with `Enter` | Toggle focused, starting in light theme. | Press `Enter`. | `aria-checked` transitions `false -> true`; root `data-theme` transitions `light -> dark`; accessible label updates to `Switch to light mode`. | ARIA state, theme state, and label transition together after `Enter`. | `Enter` is ignored, toggles incorrectly, or ARIA/theme/label diverge. |
+| `TT-A11Y-05` | Contrast threshold in dark mode | Theme is dark. | Resolve runtime computed foreground/background pairs and calculate contrast ratio. | Each required pair ratio is `>= 4.5:1` (WCAG AA normal text). | All dark-mode pairs meet or exceed 4.5:1. | Any pair is below 4.5:1. |
+| `TT-A11Y-06` | Contrast threshold in light mode | Theme toggled to light. | Resolve runtime computed foreground/background pairs and calculate contrast ratio. | Each required pair ratio is `>= 4.5:1` (WCAG AA normal text). | All light-mode pairs meet or exceed 4.5:1. | Any pair is below 4.5:1. |
+
+## Aria-Checked Transition Matrix
+
+| Activation Path | Before | After | Required Coupled Assertions |
+| --- | --- | --- | --- |
+| `Space` on focused toggle (`TT-A11Y-03`) | `aria-checked="true"`, `data-theme="dark"` | `aria-checked="false"`, `data-theme="light"` | Accessible label becomes `Switch to dark mode`. |
+| `Enter` on focused toggle (`TT-A11Y-04`) | `aria-checked="false"`, `data-theme="light"` | `aria-checked="true"`, `data-theme="dark"` | Accessible label becomes `Switch to light mode`. |
+
+## Contrast Assertion Set
+
+| Probe ID | Foreground Token | Background Token | Minimum Ratio | Applies To |
 | --- | --- | --- | --- | --- |
-| `TT-A11Y-01` | Tab focus order reaches the theme switch in expected top-bar order. | From initial page load, `Tab` moves focus in sequence: task input -> create task button -> preset select -> theme toggle switch. | Theme toggle receives visible keyboard focus in sequence and is discoverable without pointer input. | Theme toggle is skipped, unreachable via `Tab`, or appears out of expected order before required controls. |
-| `TT-A11Y-02` | Theme switch exposes switch semantics. | Toggle control is queryable as `getByRole('switch')` and includes an accessible name that describes the next action (`Switch to light mode` / `Switch to dark mode`). | Element role is `switch` and the accessible label is present for both states. | Control is not exposed as `switch`, or has missing/incorrect accessible naming. |
-| `TT-A11Y-03` | `Space` activates switch and updates state. | With toggle focused in default dark mode, pressing `Space` flips `aria-checked` (`true -> false`) and sets document theme to light. | `aria-checked` and `data-theme` update together after `Space`; label updates to `Switch to dark mode`. | Keyboard activation does not toggle state, or ARIA/document theme become out of sync. |
-| `TT-A11Y-04` | `Enter` activates switch and updates state. | With toggle focused in light mode, pressing `Enter` flips `aria-checked` (`false -> true`) and restores dark theme. | `aria-checked` and `data-theme` update together after `Enter`; label updates to `Switch to light mode`. | `Enter` is ignored, toggles wrong state, or ARIA/document theme diverge. |
-| `TT-A11Y-05` | Contrast of switch text/background passes WCAG AA in dark mode. | Compute contrast ratio from computed `color` and `background-color` in dark state. | Contrast ratio is `>= 4.5:1` (normal text AA). | Contrast ratio is `< 4.5:1`. |
-| `TT-A11Y-06` | Contrast of switch text/background passes WCAG AA in light mode. | Toggle to light mode and compute contrast ratio from computed `color` and `background-color`. | Contrast ratio is `>= 4.5:1` (normal text AA). | Contrast ratio is `< 4.5:1`. |
+| `body-primary-on-canvas` | `--text-primary` | `--bg-canvas` | `4.5:1` | Dark + Light |
+| `body-secondary-on-canvas` | `--text-secondary` | `--bg-canvas` | `4.5:1` | Dark + Light |
+| `body-primary-on-panel` | `--text-primary` | `--bg-panel` | `4.5:1` | Dark + Light |
+| `theme-toggle-text-on-toggle-bg` | `--theme-toggle-text` | `--theme-toggle-bg` | `4.5:1` | Dark + Light |
 
 ## Notes
 
 - Contrast checks intentionally use runtime computed CSS values to validate shipped tokens, not hard-coded hex assumptions.
 - Keyboard assertions validate interaction parity and semantic state alignment (`role`, `aria-checked`, label, and theme dataset).
 
-## Coverage Closure (Subtask 7/7)
+## Test Mapping (Subtask 2/8)
 
 - `TT-A11Y-01`: Covered by Playwright test `TT-A11Y-01 moves focus to theme toggle using keyboard-only Tab navigation` in `tests/theme-toggle.spec.ts`.
 - `TT-A11Y-02`: Covered by Playwright test `TT-A11Y-02 keeps switch semantics and updates ARIA state on repeated interactions` in `tests/theme-toggle.spec.ts`.

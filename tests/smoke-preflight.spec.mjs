@@ -14,7 +14,7 @@ function run(command, args, cwd) {
   });
 }
 
-function createRepo({ includeDependencies = true, dirty = false } = {}) {
+function createRepo({ includeDependencies = true, includeBrowserBinaries = true, dirty = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'smoke-preflight-test-'));
 
   run('git', ['init', '-q'], root);
@@ -25,7 +25,32 @@ function createRepo({ includeDependencies = true, dirty = false } = {}) {
     writeFileSync(join(root, 'node_modules', 'next', 'package.json'), '{"name":"next"}\n');
 
     mkdirSync(join(root, 'node_modules', '@playwright', 'test'), { recursive: true });
-    writeFileSync(join(root, 'node_modules', '@playwright', 'test', 'package.json'), '{"name":"@playwright/test"}\n');
+    writeFileSync(
+      join(root, 'node_modules', '@playwright', 'test', 'package.json'),
+      '{"name":"@playwright/test","main":"index.js"}\n',
+    );
+
+    const browsersDir = join(root, 'pw-browsers');
+    mkdirSync(browsersDir, { recursive: true });
+    const chromiumPath = join(browsersDir, 'chromium');
+    const firefoxPath = join(browsersDir, 'firefox');
+    const webkitPath = join(browsersDir, 'webkit');
+
+    if (includeBrowserBinaries) {
+      writeFileSync(chromiumPath, '#!/bin/sh\n');
+      writeFileSync(firefoxPath, '#!/bin/sh\n');
+      writeFileSync(webkitPath, '#!/bin/sh\n');
+    }
+
+    writeFileSync(
+      join(root, 'node_modules', '@playwright', 'test', 'index.js'),
+      `module.exports = {
+  chromium: { executablePath: () => ${JSON.stringify(chromiumPath)} },
+  firefox: { executablePath: () => ${JSON.stringify(firefoxPath)} },
+  webkit: { executablePath: () => ${JSON.stringify(webkitPath)} },
+};
+`,
+    );
   }
 
   run('git', ['add', '.'], root);
@@ -76,6 +101,14 @@ test('fails preflight when required tooling is unavailable', () => {
 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /Required tool "npm" is unavailable\./);
+});
+
+test('fails preflight when Playwright browser binaries are missing', () => {
+  const repo = createRepo({ includeDependencies: true, includeBrowserBinaries: false, dirty: false });
+  const result = runPreflight(repo);
+
+  assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /Missing Playwright browser binaries/);
 });
 
 test('fails preflight when worktree is dirty', () => {

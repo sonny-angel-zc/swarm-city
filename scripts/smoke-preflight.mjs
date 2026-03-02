@@ -3,6 +3,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 
 const MIN_NODE_MAJOR = 20;
@@ -88,6 +89,44 @@ function ensureDependencyInstalled(packagePath, label) {
     fail(
       `Missing dependency: ${label}.`,
       'Run npm ci (or npm install) before running smoke tests.',
+    );
+  }
+}
+
+function ensurePlaywrightBrowsersInstalled() {
+  const require = createRequire(resolve(process.cwd(), 'package.json'));
+  let playwright;
+
+  try {
+    playwright = require('@playwright/test');
+  } catch {
+    fail(
+      'Unable to resolve "@playwright/test" runtime module.',
+      'Run npm ci (or npm install), then retry smoke tests.',
+    );
+  }
+
+  const browserEngines = [
+    { name: 'chromium', launcher: playwright?.chromium },
+    { name: 'firefox', launcher: playwright?.firefox },
+    { name: 'webkit', launcher: playwright?.webkit },
+  ];
+
+  const missing = [];
+  for (const browser of browserEngines) {
+    const executablePath =
+      browser.launcher && typeof browser.launcher.executablePath === 'function'
+        ? browser.launcher.executablePath()
+        : '';
+    if (!executablePath || !existsSync(executablePath)) {
+      missing.push(`${browser.name} (${executablePath || 'unknown path'})`);
+    }
+  }
+
+  if (missing.length > 0) {
+    fail(
+      `Missing Playwright browser binaries for: ${missing.join(', ')}.`,
+      'Run npx playwright install (or npx playwright install chromium firefox webkit), then retry.',
     );
   }
 }
@@ -294,6 +333,7 @@ async function main() {
 
   ensureDependencyInstalled('node_modules/next/package.json', 'next');
   ensureDependencyInstalled('node_modules/@playwright/test/package.json', '@playwright/test');
+  ensurePlaywrightBrowsersInstalled();
 
   log(`Config: SMOKE_HOST=${host}, SMOKE_PORT=${port}, SMOKE_PREFLIGHT_MODE=${preflightMode}`);
   await assertServerReadiness({ host, port, baseUrl, preflightMode });

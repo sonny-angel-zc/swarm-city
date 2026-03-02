@@ -89,6 +89,7 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
         <div className="relative">
           <input
             type="text"
+            data-testid="task-input"
             value={input}
             onChange={e => setInput(e.target.value)}
             placeholder="Enter a task for the swarm to execute..."
@@ -96,6 +97,7 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
           />
           <button
             type="submit"
+            data-testid="create-task-button"
             disabled={submitting}
             className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-[var(--accent-success)] hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed text-[var(--text-inverse)] text-xs font-semibold px-3 py-1.5 rounded-md transition-colors"
           >
@@ -106,6 +108,7 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
       <label className="hidden md:flex items-center gap-2 text-xs text-[var(--text-secondary)]">
         <span>Preset</span>
         <select
+          data-testid="model-preset-select"
           value={modelPreset}
           onChange={(e) => setModelPreset(e.target.value as 'claude-first' | 'codex-first')}
           className="bg-[var(--bg-panel-muted)] border border-[var(--border-subtle)] rounded-md px-2 py-1 text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent-primary)]"
@@ -116,6 +119,7 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
       </label>
       <button
         type="button"
+        data-testid="theme-toggle-switch"
         onClick={() => applyTheme(toggleDashboardTheme(theme), true)}
         role="switch"
         aria-checked={isDarkTheme}

@@ -90,6 +90,23 @@ const DOCS_SEED: PlanDocument[] = [
     ].join('\n'),
   },
   {
+    id: 'theme-toggle-audit-swa-65-subtask-1',
+    title: 'Theme Toggle Accessibility Audit (SWA-65 Subtask 1/8)',
+    path: 'docs/testing/theme-toggle-audit-swa-65-subtask-1.md',
+    category: 'reference',
+    track: 'foundation',
+    updatedAt: '2026-03-02',
+    summary: 'Audit of theme toggle accessibility implementation and Playwright coverage, including selector strategy and prioritized gaps.',
+    tags: ['theme', 'accessibility', 'e2e', 'playwright', 'swa-65', 'audit'],
+    content: [
+      'SWA-65 subtask 1/8 audit captures current implementation, existing coverage, and concrete gaps.',
+      '- Keyboard interactions are covered for Tab, Space, and Enter, but focus visibility assertion is missing.',
+      '- Switch semantics are implemented, but selectors should be hardened for future additional switches.',
+      '- Contrast checks meet AA thresholds for key pairs, with recommended real-element assertion extension.',
+      '- Recommended order provided for follow-on subtasks.',
+    ].join('\n'),
+  },
+  {
     id: 'theme-toggle-accessibility-matrix',
     title: 'Theme Toggle Accessibility E2E Matrix (SWA-65)',
     path: 'docs/testing/theme-toggle-accessibility-matrix.md',
@@ -99,7 +116,7 @@ const DOCS_SEED: PlanDocument[] = [
     summary: 'End-to-end accessibility matrix covering keyboard focus order, switch semantics, ARIA state transitions, and contrast pass/fail criteria.',
     tags: ['theme', 'accessibility', 'e2e', 'playwright', 'swa-65', 'wcag'],
     content: [
-      'SWA-65 subtask 2/7 defines the theme toggle accessibility test scenarios and assertions.',
+      'SWA-65 subtask 2/8 defines the theme toggle accessibility test scenarios and assertions.',
       '- Validate tab focus order reaches the theme switch in expected top-bar sequence.',
       '- Validate switch semantics with role=switch and dynamic accessible labels.',
       '- Validate Space and Enter keyboard activation update aria-checked and document theme state.',
