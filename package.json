@@ -13,6 +13,7 @@
     "validate:docs-registry": "node scripts/validate-docs-registry.mjs",
     "validate:next-router-roots": "node scripts/validate-next-router-roots.mjs",
     "test:e2e": "playwright test",
+    "test:startup": "node --loader ./tests/ts-alias-loader.mjs --test tests/autonomous-startup.spec.mjs",
     "test:smoke:preflight": "node scripts/smoke-preflight.mjs",
     "test:smoke": "npm run test:smoke:preflight && playwright test tests/smoke.spec.ts",
     "test:smoke:ci": "npm run test:smoke:preflight && CI=1 playwright test tests/smoke.spec.ts --workers=1 --retries=0"
