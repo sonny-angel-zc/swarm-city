@@ -161,7 +161,10 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
                       <div className="flex items-center gap-1.5 mt-0.5">
                         <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agent.status]}`} />
                         <span className="text-[10px] text-[var(--text-secondary)]">{statusLabels[agent.status]}</span>
-                        {agent.status === 'working' && (
+                        {agent.status === 'working' && agent.currentTask && (
+                          <span className="text-[10px] text-blue-400 font-mono ml-auto truncate max-w-[120px]" title={agent.currentTask}>{agent.currentTask}</span>
+                        )}
+                        {agent.status === 'working' && !agent.currentTask && agent.progress > 0 && (
                           <span className="text-[10px] text-blue-400 font-mono ml-auto">{Math.round(agent.progress * 100)}%</span>
                         )}
                       </div>

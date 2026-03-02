@@ -90,6 +90,23 @@ const DOCS_SEED: PlanDocument[] = [
     ].join('\n'),
   },
   {
+    id: 'theme-toggle-accessibility-matrix',
+    title: 'Theme Toggle Accessibility E2E Matrix (SWA-65)',
+    path: 'docs/testing/theme-toggle-accessibility-matrix.md',
+    category: 'reference',
+    track: 'foundation',
+    updatedAt: '2026-03-02',
+    summary: 'End-to-end accessibility matrix covering keyboard focus order, switch semantics, ARIA state transitions, and contrast pass/fail criteria.',
+    tags: ['theme', 'accessibility', 'e2e', 'playwright', 'swa-65', 'wcag'],
+    content: [
+      'SWA-65 subtask 2/7 defines the theme toggle accessibility test scenarios and assertions.',
+      '- Validate tab focus order reaches the theme switch in expected top-bar sequence.',
+      '- Validate switch semantics with role=switch and dynamic accessible labels.',
+      '- Validate Space and Enter keyboard activation update aria-checked and document theme state.',
+      '- Validate dark and light theme contrast ratios pass WCAG AA at 4.5:1 or higher.',
+    ].join('\n'),
+  },
+  {
     id: 'connect-your-tools-guide',
     title: 'Connect Your Tools Guide',
     path: 'docs/guides/connect-your-tools.md',
