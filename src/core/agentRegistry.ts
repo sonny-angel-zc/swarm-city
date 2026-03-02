@@ -7,6 +7,8 @@ export type ServerAgentState = {
   currentTask: string | null;
   lastOutput: string | null;
   updatedAt: number;
+  tokensUsed: number;
+  taskStartedAt: number | null;
 };
 
 type AgentRegistry = Map<AgentRole, ServerAgentState>;
@@ -24,6 +26,8 @@ function createInitialRegistry(): AgentRegistry {
       currentTask: null,
       lastOutput: null,
       updatedAt: now,
+      tokensUsed: 0,
+      taskStartedAt: null,
     });
   }
   return registry;
@@ -43,10 +47,23 @@ export function getAgentStatus(role: AgentRole): ServerAgentState {
 
 export function setAgentStatus(role: AgentRole, status: ServerAgentStatus, task: string | null): void {
   const existing = registry().get(role);
+  const now = Date.now();
   registry().set(role, {
     status,
     currentTask: task,
     lastOutput: existing?.lastOutput ?? null,
+    updatedAt: now,
+    tokensUsed: status === 'working' && task !== existing?.currentTask ? 0 : (existing?.tokensUsed ?? 0),
+    taskStartedAt: status === 'working' ? (existing?.taskStartedAt ?? now) : null,
+  });
+}
+
+export function addAgentTokens(role: AgentRole, tokens: number): void {
+  const existing = registry().get(role);
+  if (!existing) return;
+  registry().set(role, {
+    ...existing,
+    tokensUsed: existing.tokensUsed + tokens,
     updatedAt: Date.now(),
   });
 }
@@ -81,6 +98,8 @@ export function clearAllStatuses(): void {
       currentTask: null,
       lastOutput: null,
       updatedAt: now,
+      tokensUsed: 0,
+      taskStartedAt: null,
     });
   }
 }

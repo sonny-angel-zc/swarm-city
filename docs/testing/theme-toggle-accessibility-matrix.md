@@ -19,3 +19,12 @@ This matrix defines subtask 2/7 for SWA-65: end-to-end scenarios and assertions 
 
 - Contrast checks intentionally use runtime computed CSS values to validate shipped tokens, not hard-coded hex assumptions.
 - Keyboard assertions validate interaction parity and semantic state alignment (`role`, `aria-checked`, label, and theme dataset).
+
+## Coverage Closure (Subtask 7/7)
+
+- `TT-A11Y-01`: Covered by Playwright test `TT-A11Y-01 moves focus to theme toggle using keyboard-only Tab navigation` in `tests/theme-toggle.spec.ts`.
+- `TT-A11Y-02`: Covered by Playwright test `TT-A11Y-02 keeps switch semantics and updates ARIA state on repeated interactions` in `tests/theme-toggle.spec.ts`.
+- `TT-A11Y-03`: Covered by Playwright test `TT-A11Y-03 toggles theme with Space key from dark to light with deterministic state updates` in `tests/theme-toggle.spec.ts`.
+- `TT-A11Y-04`: Covered by Playwright test `TT-A11Y-04 toggles theme with Enter key from light to dark with deterministic state updates` in `tests/theme-toggle.spec.ts`.
+- `TT-A11Y-05`: Covered by Playwright test `TT-A11Y-05/TT-A11Y-06 meets WCAG AA contrast thresholds for key theme foreground/background combinations` while `data-theme="dark"`.
+- `TT-A11Y-06`: Covered by Playwright test `TT-A11Y-05/TT-A11Y-06 meets WCAG AA contrast thresholds for key theme foreground/background combinations` after toggling to `data-theme="light"`.

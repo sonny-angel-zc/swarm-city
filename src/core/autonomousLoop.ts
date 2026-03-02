@@ -11,7 +11,7 @@ import {
   runCodexExec,
 } from './orchestrator';
 import { AgentRole } from './types';
-import { clearAllStatuses, setAgentLastOutput, setAgentStatus } from './agentRegistry';
+import { addAgentTokens, clearAllStatuses, setAgentLastOutput, setAgentStatus } from './agentRegistry';
 
 type AutonomousEventType = 'info' | 'error' | 'warning';
 
@@ -481,6 +481,7 @@ async function tickLoop() {
     usage.outputTokens += decomposition.usage.outputTokens;
     usage.totalTokens += decomposition.usage.totalTokens;
     if (decomposition.usage.model) usage.model = decomposition.usage.model;
+    addAgentTokens('pm', decomposition.usage.totalTokens);
     setAgentLastOutput('pm', decomposition.text.slice(-2000));
 
     if (decomposition.code !== 0) {
@@ -539,6 +540,7 @@ async function tickLoop() {
       usage.outputTokens += result.usage.outputTokens;
       usage.totalTokens += result.usage.totalTokens;
       if (result.usage.model) usage.model = result.usage.model;
+      addAgentTokens(subtask.role, result.usage.totalTokens);
       setAgentLastOutput(subtask.role, result.text.slice(-2000));
 
       if (result.code !== 0) {

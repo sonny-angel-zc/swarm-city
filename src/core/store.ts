@@ -143,6 +143,8 @@ type ServerAgentState = {
   currentTask: string | null;
   lastOutput: string | null;
   updatedAt: number;
+  tokensUsed: number;
+  taskStartedAt: number | null;
 };
 
 type TokenSpendMetadata = {
@@ -1399,7 +1401,10 @@ docsRegistry: getPlanRegistry(),
             status: mappedStatus,
             currentTask,
             progress: mappedStatus === 'idle' ? 0 : nextAgents[role].progress,
-          };
+            contextUsed: remote.tokensUsed ? Math.min(1, remote.tokensUsed / (remote.tokensUsed + 100000)) : nextAgents[role].contextUsed,
+          } as typeof nextAgents[typeof role] & { _tokensUsed?: number };
+          // Store raw token count on the agent for the sidebar to read
+          (nextAgents[role] as Record<string, unknown>)._tokensUsed = remote.tokensUsed ?? 0;
         }
         return { agents: nextAgents };
       });

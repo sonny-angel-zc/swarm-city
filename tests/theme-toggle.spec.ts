@@ -113,6 +113,15 @@ async function focusThemeToggleViaTab(page: import('playwright/test').Page) {
   const presetSelect = page.getByRole('combobox', { name: 'Preset' });
   const toggle = page.getByRole('switch');
 
+  await expect(taskInput).toBeVisible();
+  await expect(createTaskButton).toBeVisible();
+  await expect(presetSelect).toBeVisible();
+  await expect(toggle).toBeVisible();
+  await page.evaluate(() => {
+    const active = document.activeElement as HTMLElement | null;
+    active?.blur();
+  });
+
   await page.keyboard.press('Tab');
   await expect(taskInput).toBeFocused();
   await page.keyboard.press('Tab');
@@ -195,7 +204,7 @@ test.describe('dashboard theme toggle', () => {
     await expect(page.locator('html')).not.toHaveClass(/dark/);
   });
 
-  test('keeps switch role and updates aria-checked on every repeated toggle interaction', async ({ page }) => {
+  test('TT-A11Y-02 keeps switch semantics and updates ARIA state on repeated interactions', async ({ page }) => {
     await page.goto('/');
 
     const toggle = page.getByRole('switch');
@@ -209,7 +218,7 @@ test.describe('dashboard theme toggle', () => {
     }
   });
 
-  test('moves focus to theme toggle using keyboard-only Tab navigation', async ({ page }) => {
+  test('TT-A11Y-01 moves focus to theme toggle using keyboard-only Tab navigation', async ({ page }) => {
     await page.goto('/');
 
     const toggle = await focusThemeToggleViaTab(page);
@@ -219,13 +228,13 @@ test.describe('dashboard theme toggle', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   });
 
-  test('toggles theme with Space key from dark to light with deterministic state updates', async ({ page }) => {
+  test('TT-A11Y-03 toggles theme with Space key from dark to light with deterministic state updates', async ({ page }) => {
     await page.goto('/');
 
     const toggle = await focusThemeToggleViaTab(page);
     await expect(toggle).toHaveAccessibleName('Switch to light mode');
 
-    await page.keyboard.press('Space');
+    await toggle.press('Space');
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
     await expect(toggle).toHaveAttribute('aria-label', 'Switch to dark mode');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
@@ -237,7 +246,7 @@ test.describe('dashboard theme toggle', () => {
       .toBe('light');
   });
 
-  test('toggles theme with Enter key from light to dark with deterministic state updates', async ({ page }) => {
+  test('TT-A11Y-04 toggles theme with Enter key from light to dark with deterministic state updates', async ({ page }) => {
     await page.addInitScript(() => {
       window.localStorage.setItem('swarm:theme', 'light');
     });
@@ -249,7 +258,7 @@ test.describe('dashboard theme toggle', () => {
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     await expect(page.locator('html')).not.toHaveClass(/dark/);
 
-    await page.keyboard.press('Enter');
+    await toggle.press('Enter');
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
     await expect(toggle).toHaveAttribute('aria-label', 'Switch to light mode');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -261,7 +270,7 @@ test.describe('dashboard theme toggle', () => {
       .toBe('dark');
   });
 
-  test('meets WCAG AA contrast thresholds for key theme foreground/background combinations', async ({ page }) => {
+  test('TT-A11Y-05/TT-A11Y-06 meets WCAG AA contrast thresholds for key theme foreground/background combinations', async ({ page }) => {
     await page.goto('/');
     const toggle = page.getByRole('switch', { name: 'Switch to light mode' });
 
