@@ -14,6 +14,7 @@
     "validate:next-router-roots": "node scripts/validate-next-router-roots.mjs",
     "test:e2e": "playwright test",
     "test:smoke:preflight": "node scripts/smoke-preflight.mjs",
+    "test:smoke:preflight:unit": "node --test tests/smoke-preflight.spec.mjs",
     "test:smoke": "npm run test:smoke:preflight && playwright test tests/smoke.spec.ts",
     "test:smoke:ci": "npm run test:smoke:preflight && CI=1 playwright test tests/smoke.spec.ts --workers=1 --retries=0"
   },

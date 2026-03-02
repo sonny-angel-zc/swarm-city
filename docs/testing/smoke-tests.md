@@ -38,6 +38,12 @@ npm run test:smoke
 
 Each smoke run now starts with `test:smoke:preflight`, which fails fast on missing tooling, dirty git worktrees, invalid `SMOKE_HOST`/`SMOKE_PORT`, missing dependencies, or server startup/readiness errors.
 
+Run preflight decision-path unit coverage (clean pass, missing tooling fail, dirty worktree fail):
+
+```bash
+npm run test:smoke:preflight:unit
+```
+
 ## CI-equivalent run
 
 Run with CI semantics (single worker, zero retries):
