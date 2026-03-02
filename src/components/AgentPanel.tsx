@@ -6,6 +6,7 @@ import { useSwarmStore } from '@/core/store';
 const statusColors: Record<string, string> = {
   idle: 'text-gray-400',
   working: 'text-blue-400',
+  reviewing: 'text-yellow-300',
   needs_input: 'text-red-400',
   done: 'text-green-400',
   blocked: 'text-orange-400',
@@ -14,6 +15,7 @@ const statusColors: Record<string, string> = {
 const statusDots: Record<string, string> = {
   idle: 'bg-gray-500',
   working: 'bg-blue-400 animate-pulse',
+  reviewing: 'bg-yellow-400 animate-pulse',
   needs_input: 'bg-red-400 animate-pulse',
   done: 'bg-green-400',
   blocked: 'bg-orange-400 animate-pulse',

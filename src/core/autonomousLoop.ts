@@ -5,11 +5,12 @@ import {
   cleanupAutonomousBranchesForClosedIssues,
   cleanupStaleAutonomousWorktrees,
   detectRetryKind,
-  executeAutonomousTaskWithCodex,
+  executeAutonomousTaskWithRoles,
   hasActiveCodexProcess,
   runAutonomousPreflight,
   runCodexExec,
 } from './orchestrator';
+import type { AgentRole, SwarmAgent } from './types';
 
 type AutonomousEventType = 'info' | 'error' | 'warning';
 
@@ -41,6 +42,7 @@ export type AutonomousState = {
   } | null;
   completedTasks: AutonomousCompletedTask[];
   events: AutonomousEvent[];
+  agents: Record<AgentRole, SwarmAgent>;
   seeded: boolean;
   lastTickAt: number | null;
   consecutiveErrors: number;
@@ -105,6 +107,18 @@ const SEED_TASKS: Array<{ title: string; description: string; priority: number }
 
 const globalRuntime = globalThis as unknown as { __swarmAutonomousRuntime?: Runtime };
 
+function createInitialAutonomousAgents(): Record<AgentRole, SwarmAgent> {
+  return {
+    pm: { role: 'pm', status: 'idle', currentTask: null, lastOutput: null },
+    engineer: { role: 'engineer', status: 'idle', currentTask: null, lastOutput: null },
+    designer: { role: 'designer', status: 'idle', currentTask: null, lastOutput: null },
+    qa: { role: 'qa', status: 'idle', currentTask: null, lastOutput: null },
+    devils_advocate: { role: 'devils_advocate', status: 'idle', currentTask: null, lastOutput: null },
+    reviewer: { role: 'reviewer', status: 'idle', currentTask: null, lastOutput: null },
+    researcher: { role: 'researcher', status: 'idle', currentTask: null, lastOutput: null },
+  };
+}
+
 function createInitialState(): AutonomousState {
   return {
     enabled: DEFAULT_ENABLED,
@@ -116,6 +130,7 @@ function createInitialState(): AutonomousState {
     currentTask: null,
     completedTasks: [],
     events: [],
+    agents: createInitialAutonomousAgents(),
     seeded: false,
     lastTickAt: null,
     consecutiveErrors: 0,
@@ -386,13 +401,31 @@ async function tickLoop() {
       return;
     }
 
-    const execution = await executeAutonomousTaskWithCodex({
+    rt.state.agents = createInitialAutonomousAgents();
+    const execution = await executeAutonomousTaskWithRoles({
       title: issue.title,
       description: issue.description,
       issueIdentifier: issue.identifier,
       workDir: PROJECT_ROOT,
       model: process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex',
       preflight,
+      onRoleUpdate: (update) => {
+        rt.state.agents = {
+          ...rt.state.agents,
+          [update.role]: {
+            role: update.role,
+            status: update.status,
+            currentTask: update.currentTask,
+            lastOutput: update.lastOutput,
+          },
+        };
+        if (update.currentTask) {
+          addEvent(
+            `${update.role} ${update.status}: ${update.currentTask}`,
+            update.status === 'blocked' ? 'warning' : 'info',
+          );
+        }
+      },
     });
 
     const tokenSummary = `input=${execution.usage.inputTokens.toLocaleString()}, output=${execution.usage.outputTokens.toLocaleString()}, total=${execution.usage.totalTokens.toLocaleString()}`;
@@ -459,6 +492,7 @@ async function tickLoop() {
   } finally {
     rt.state.running = false;
     rt.state.currentTask = null;
+    rt.state.agents = createInitialAutonomousAgents();
     rt.lock = false;
   }
 }
@@ -535,6 +569,15 @@ export function getAutonomousState(sinceEventId?: number): AutonomousState {
   return {
     ...state,
     events,
+    agents: {
+      pm: { ...state.agents.pm },
+      engineer: { ...state.agents.engineer },
+      designer: { ...state.agents.designer },
+      qa: { ...state.agents.qa },
+      devils_advocate: { ...state.agents.devils_advocate },
+      reviewer: { ...state.agents.reviewer },
+      researcher: { ...state.agents.researcher },
+    },
     completedTasks: [...state.completedTasks],
     currentTask: state.currentTask ? { ...state.currentTask } : null,
   };

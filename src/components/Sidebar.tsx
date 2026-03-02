@@ -14,6 +14,7 @@ function formatDuration(ms: number): string {
 const statusColors: Record<string, string> = {
   idle: 'bg-gray-500',
   working: 'bg-blue-400 animate-pulse',
+  reviewing: 'bg-yellow-400 animate-pulse',
   needs_input: 'bg-red-400 animate-pulse',
   done: 'bg-green-400',
   blocked: 'bg-orange-400',
@@ -22,6 +23,7 @@ const statusColors: Record<string, string> = {
 const statusLabels: Record<string, string> = {
   idle: 'Idle',
   working: 'Working',
+  reviewing: 'Reviewing',
   needs_input: 'Needs Input',
   done: 'Done',
   blocked: 'Blocked',

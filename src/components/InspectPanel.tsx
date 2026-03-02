@@ -6,6 +6,7 @@ import { useSwarmStore } from '@/core/store';
 const statusBadge: Record<string, { bg: string; text: string; label: string }> = {
   idle: { bg: 'bg-gray-700', text: 'text-gray-300', label: 'IDLE' },
   working: { bg: 'bg-blue-900/60', text: 'text-blue-300', label: 'WORKING' },
+  reviewing: { bg: 'bg-yellow-900/60', text: 'text-yellow-300', label: 'REVIEWING' },
   needs_input: { bg: 'bg-red-900/60', text: 'text-red-300', label: 'NEEDS INPUT' },
   done: { bg: 'bg-green-900/60', text: 'text-green-300', label: 'COMPLETE' },
   blocked: { bg: 'bg-orange-900/60', text: 'text-orange-300', label: 'BLOCKED' },
@@ -23,7 +24,7 @@ export default function InspectPanel() {
   if (!selectedAgent) return null;
 
   const agent = agents[selectedAgent];
-  const badge = statusBadge[agent.status];
+  const badge = statusBadge[agent.status] ?? statusBadge.idle;
 
   return (
     <div className="absolute bottom-16 left-4 w-96 bg-[#0d1117]/95 backdrop-blur-md border border-[#30363d] rounded-xl shadow-2xl overflow-hidden z-20">

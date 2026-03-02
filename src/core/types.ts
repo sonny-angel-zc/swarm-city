@@ -1,7 +1,14 @@
 // Agent roles and their building representations
 export type AgentRole = 'pm' | 'engineer' | 'designer' | 'qa' | 'devils_advocate' | 'reviewer' | 'researcher';
 
-export type AgentStatus = 'idle' | 'working' | 'needs_input' | 'done' | 'blocked';
+export type AgentStatus = 'idle' | 'working' | 'needs_input' | 'done' | 'blocked' | 'reviewing';
+
+export type SwarmAgent = {
+  role: AgentRole;
+  status: 'idle' | 'working' | 'blocked' | 'reviewing';
+  currentTask: string | null;
+  lastOutput: string | null;
+};
 
 export type BuildingConfig = {
   role: AgentRole;
@@ -237,6 +244,7 @@ export type AutonomousStatus = {
     identifier: string;
     title: string;
   } | null;
+  agents: Record<AgentRole, SwarmAgent>;
   completedTasks: AutonomousCompletedTask[];
   events: AutonomousEvent[];
   seeded: boolean;

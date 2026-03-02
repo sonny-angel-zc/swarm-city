@@ -46,7 +46,7 @@ const taskStates = globalForTasks.__swarmTaskStates;
 // ─── Agent config ─────────────────────────────────────────────────────────────
 
 // Sequential execution order (PM runs first for decomposition, then these in order)
-const AGENT_ORDER: AgentRole[] = [
+const AGENT_ORDER: Array<Exclude<AgentRole, 'pm'>> = [
   'researcher',
   'designer',
   'engineer',
@@ -846,6 +846,15 @@ export type AutonomousExecutionResult = {
   };
 };
 
+export type SwarmAgentExecutionStatus = 'idle' | 'working' | 'blocked' | 'reviewing';
+
+export type AutonomousRoleUpdate = {
+  role: AgentRole;
+  status: SwarmAgentExecutionStatus;
+  currentTask: string | null;
+  lastOutput: string | null;
+};
+
 export type AutonomousPreflightResult = {
   noCommitMode: boolean;
   constraints: string[];
@@ -887,6 +896,86 @@ function getIssueInputProblem(title: string, description?: string | null): strin
   }
 
   return null;
+}
+
+type PlannedSubtask = {
+  id: string;
+  role: Exclude<AgentRole, 'pm'>;
+  title: string;
+  description: string;
+  dependsOn: string[];
+};
+
+function parsePlannedSubtasks(raw: string, title: string): PlannedSubtask[] {
+  const fallback: PlannedSubtask[] = AGENT_ORDER.map((role, i) => ({
+    id: `st-${i + 1}`,
+    role,
+    title: `${role.replace('_', ' ')}: ${title}`,
+    description: AGENT_SYSTEM_PROMPTS[role],
+    dependsOn: i === 0 ? [] : [`st-${i}`],
+  }));
+
+  try {
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) return fallback;
+    const parsed = JSON.parse(match[0]) as Array<{
+      id?: unknown;
+      role?: unknown;
+      title?: unknown;
+      description?: unknown;
+      dependsOn?: unknown;
+    }>;
+    const planned: PlannedSubtask[] = [];
+    for (let i = 0; i < parsed.length; i++) {
+      const row = parsed[i] ?? {};
+      const role = typeof row.role === 'string' ? row.role : '';
+      if (!AGENT_ORDER.includes(role as Exclude<AgentRole, 'pm'>)) continue;
+      const id = typeof row.id === 'string' && row.id.trim().length > 0
+        ? row.id.trim()
+        : `st-${i + 1}`;
+      const dependsOn = Array.isArray(row.dependsOn)
+        ? row.dependsOn.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : [];
+      planned.push({
+        id,
+        role: role as Exclude<AgentRole, 'pm'>,
+        title: typeof row.title === 'string' && row.title.trim().length > 0 ? row.title.trim() : `${role}: ${title}`,
+        description: typeof row.description === 'string' && row.description.trim().length > 0
+          ? row.description.trim()
+          : AGENT_SYSTEM_PROMPTS[role as Exclude<AgentRole, 'pm'>],
+        dependsOn,
+      });
+    }
+    if (planned.length === 0) return fallback;
+    return planned;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildRoleExecutionPrompt(params: {
+  issueIdentifier: string;
+  title: string;
+  description?: string | null;
+  subtask: PlannedSubtask;
+  priorOutputs: Array<{ role: Exclude<AgentRole, 'pm'>; output: string }>;
+}): string {
+  const prior = params.priorOutputs
+    .map((item) => `${item.role.toUpperCase()} OUTPUT:\n${item.output.slice(-4000)}`)
+    .join('\n\n---\n\n');
+  return [
+    `Issue ${params.issueIdentifier}: ${params.title}`,
+    `Issue Description: ${params.description ?? '(no description provided)'}`,
+    '',
+    `Assigned Role: ${params.subtask.role}`,
+    `Role Task: ${params.subtask.title}`,
+    `Role Instructions: ${params.subtask.description}`,
+    '',
+    prior ? `Prior agent outputs:\n${prior}` : '',
+    '',
+    'Execute this role-specific task directly in this worktree.',
+    'Make concrete implementation changes as needed, then summarize what was done and what remains.',
+  ].filter(Boolean).join('\n');
 }
 
 export function runAutonomousPreflight(workDir: string): AutonomousPreflightResult {
@@ -1109,6 +1198,302 @@ export async function executeAutonomousTaskWithCodex(params: {
     };
   } finally {
     if (worktree) cleanupAutonomousWorktree(worktree);
+  }
+}
+
+export async function executeAutonomousTaskWithRoles(params: {
+  title: string;
+  description?: string | null;
+  issueIdentifier: string;
+  workDir: string;
+  model?: string;
+  preflight?: AutonomousPreflightResult;
+  onRoleUpdate?: (update: AutonomousRoleUpdate) => void;
+}): Promise<AutonomousExecutionResult> {
+  const model = params.model ?? 'gpt-5.3-codex';
+  const preflight = params.preflight ?? runAutonomousPreflight(params.workDir);
+  const issueInputProblem = getIssueInputProblem(params.title, params.description);
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    model,
+  };
+  const restarts: string[] = [];
+  const roleOutputs: Array<{ role: Exclude<AgentRole, 'pm'>; output: string }> = [];
+  const activeWorktrees: AutonomousWorktreeInfo[] = [];
+
+  if (issueInputProblem) {
+    return {
+      ok: false,
+      output: issueInputProblem,
+      restarts,
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  }
+
+  const emitRoleUpdate = (update: AutonomousRoleUpdate): void => {
+    try {
+      params.onRoleUpdate?.(update);
+    } catch {
+      // best-effort observer callback
+    }
+  };
+
+  try {
+    const cityHallWorktree = createAutonomousWorktree(params.workDir, `${params.issueIdentifier}-city-hall`);
+    activeWorktrees.push(cityHallWorktree);
+
+    emitRoleUpdate({
+      role: 'pm',
+      status: 'working',
+      currentTask: `Decomposing ${params.issueIdentifier}`,
+      lastOutput: null,
+    });
+
+    const decompositionPrompt = [
+      'You are City Hall (PM orchestrator).',
+      'Decompose the issue into executable subtasks for role agents.',
+      'Return ONLY valid JSON (no markdown) as an array of objects:',
+      '[{"id":"st-1","role":"researcher|designer|engineer|qa|devils_advocate|reviewer","title":"...","description":"...","dependsOn":["optional-id"]}]',
+      'Rules:',
+      '- Every subtask must have one assigned role.',
+      '- Use concrete, implementation-oriented descriptions.',
+      '- Include dependencies only when needed.',
+      '- Keep to 3-8 subtasks.',
+      '',
+      `Issue Identifier: ${params.issueIdentifier}`,
+      `Issue Title: ${params.title}`,
+      `Issue Description: ${params.description ?? '(no description provided)'}`,
+    ].join('\n');
+
+    const decomposition = await runCodexExec({
+      prompt: decompositionPrompt,
+      workDir: cityHallWorktree.worktreeDir,
+      model,
+      sandbox: 'workspace-write',
+      isolatedContext: true,
+    });
+    usage.inputTokens += decomposition.usage.inputTokens;
+    usage.outputTokens += decomposition.usage.outputTokens;
+    usage.totalTokens += decomposition.usage.totalTokens;
+    if (decomposition.usage.model) usage.model = decomposition.usage.model;
+
+    if (decomposition.code !== 0) {
+      const combined = [decomposition.stderr, decomposition.stdout].filter(Boolean).join('\n');
+      const kind = detectRetryKind(combined || `exit code ${String(decomposition.code)}`);
+      emitRoleUpdate({
+        role: 'pm',
+        status: kind === 'rate_limit' ? 'blocked' : 'blocked',
+        currentTask: null,
+        lastOutput: combined || 'City Hall decomposition failed.',
+      });
+      return {
+        ok: false,
+        output: combined || 'City Hall decomposition failed.',
+        restarts,
+        rateLimited: kind === 'rate_limit',
+        retryAfterMs: kind === 'rate_limit' ? parseRetryAfterMs(combined) : null,
+        preflight,
+        usage,
+      };
+    }
+
+    const plannedSubtasks = parsePlannedSubtasks(decomposition.text, params.title);
+    emitRoleUpdate({
+      role: 'pm',
+      status: 'reviewing',
+      currentTask: `Dispatching ${plannedSubtasks.length} role subtasks`,
+      lastOutput: decomposition.text || null,
+    });
+
+    const completed = new Set<string>();
+    const pending = [...plannedSubtasks];
+    while (pending.length > 0) {
+      const nextIdx = pending.findIndex((task) => task.dependsOn.every((dep) => completed.has(dep)));
+      const task = nextIdx >= 0 ? pending.splice(nextIdx, 1)[0] : pending.shift();
+      if (!task) break;
+
+      emitRoleUpdate({
+        role: task.role,
+        status: 'working',
+        currentTask: task.title,
+        lastOutput: null,
+      });
+
+      const roleWorktree = createAutonomousWorktree(
+        params.workDir,
+        `${params.issueIdentifier}-${task.role}-${task.id}`,
+      );
+      activeWorktrees.push(roleWorktree);
+
+      const roleResult = await runCodexExec({
+        prompt: buildRoleExecutionPrompt({
+          issueIdentifier: params.issueIdentifier,
+          title: params.title,
+          description: params.description,
+          subtask: task,
+          priorOutputs: roleOutputs,
+        }),
+        workDir: roleWorktree.worktreeDir,
+        model,
+        sandbox: 'workspace-write',
+        isolatedContext: true,
+      });
+      usage.inputTokens += roleResult.usage.inputTokens;
+      usage.outputTokens += roleResult.usage.outputTokens;
+      usage.totalTokens += roleResult.usage.totalTokens;
+      if (roleResult.usage.model) usage.model = roleResult.usage.model;
+
+      if (roleResult.code !== 0) {
+        const combined = [roleResult.stderr, roleResult.stdout].filter(Boolean).join('\n');
+        const kind = detectRetryKind(combined || `exit code ${String(roleResult.code)}`);
+        emitRoleUpdate({
+          role: task.role,
+          status: 'blocked',
+          currentTask: task.title,
+          lastOutput: combined || `${task.role} failed execution.`,
+        });
+        emitRoleUpdate({
+          role: 'pm',
+          status: 'blocked',
+          currentTask: `Failed while running ${task.role}`,
+          lastOutput: combined || 'Role execution failed.',
+        });
+        return {
+          ok: false,
+          output: combined || `${task.role} failed execution.`,
+          restarts,
+          rateLimited: kind === 'rate_limit',
+          retryAfterMs: kind === 'rate_limit' ? parseRetryAfterMs(combined) : null,
+          preflight,
+          usage,
+        };
+      }
+
+      roleOutputs.push({ role: task.role, output: roleResult.text });
+      completed.add(task.id);
+      emitRoleUpdate({
+        role: task.role,
+        status: 'reviewing',
+        currentTask: null,
+        lastOutput: roleResult.text || null,
+      });
+    }
+
+    emitRoleUpdate({
+      role: 'pm',
+      status: 'reviewing',
+      currentTask: 'Validating role outputs',
+      lastOutput: null,
+    });
+
+    const validationPrompt = [
+      'You are City Hall validating outputs from role agents.',
+      'Assess whether the issue objectives were fully handled.',
+      'If incomplete, provide concrete missing items.',
+      '',
+      `Issue Identifier: ${params.issueIdentifier}`,
+      `Issue Title: ${params.title}`,
+      `Issue Description: ${params.description ?? '(no description provided)'}`,
+      '',
+      `Planned subtasks: ${plannedSubtasks.length}`,
+      '',
+      roleOutputs.map((item) => `## ${item.role.toUpperCase()}\n${item.output.slice(-5000)}`).join('\n\n'),
+    ].join('\n');
+
+    const validation = await runCodexExec({
+      prompt: validationPrompt,
+      workDir: cityHallWorktree.worktreeDir,
+      model,
+      sandbox: 'workspace-write',
+      isolatedContext: true,
+    });
+    usage.inputTokens += validation.usage.inputTokens;
+    usage.outputTokens += validation.usage.outputTokens;
+    usage.totalTokens += validation.usage.totalTokens;
+    if (validation.usage.model) usage.model = validation.usage.model;
+
+    if (validation.code !== 0) {
+      const combined = [validation.stderr, validation.stdout].filter(Boolean).join('\n');
+      const kind = detectRetryKind(combined || `exit code ${String(validation.code)}`);
+      emitRoleUpdate({
+        role: 'pm',
+        status: 'blocked',
+        currentTask: 'Validation failed',
+        lastOutput: combined || 'City Hall validation failed.',
+      });
+      return {
+        ok: false,
+        output: combined || 'City Hall validation failed.',
+        restarts,
+        rateLimited: kind === 'rate_limit',
+        retryAfterMs: kind === 'rate_limit' ? parseRetryAfterMs(combined) : null,
+        preflight,
+        usage,
+      };
+    }
+
+    emitRoleUpdate({
+      role: 'pm',
+      status: 'idle',
+      currentTask: null,
+      lastOutput: validation.text || null,
+    });
+    for (const role of AGENT_ORDER) {
+      emitRoleUpdate({
+        role,
+        status: 'idle',
+        currentTask: null,
+        lastOutput: roleOutputs.find((item) => item.role === role)?.output ?? null,
+      });
+    }
+
+    const output = [
+      'City Hall orchestration complete.',
+      '',
+      'Decomposition:',
+      decomposition.text || '(empty)',
+      '',
+      'Role execution summary:',
+      ...roleOutputs.map((item) => `${item.role}: ${item.output.slice(0, 500)}`),
+      '',
+      'City Hall validation:',
+      validation.text || '(empty)',
+    ].join('\n');
+
+    return {
+      ok: true,
+      output,
+      restarts,
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  } catch (err) {
+    emitRoleUpdate({
+      role: 'pm',
+      status: 'blocked',
+      currentTask: null,
+      lastOutput: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      ok: false,
+      output: err instanceof Error ? err.message : String(err),
+      restarts,
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  } finally {
+    for (const worktree of activeWorktrees) {
+      cleanupAutonomousWorktree(worktree);
+    }
   }
 }
 

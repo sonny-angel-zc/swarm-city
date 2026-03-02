@@ -4,7 +4,7 @@ import {
   LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
   TelemetryState, BacklogItem, LinearSyncState, DecompositionStatus, ModelProvider,
-  AutonomousStatus,
+  AutonomousStatus, SwarmAgent,
 } from './types';
 import {
   ModelPreset,
@@ -162,6 +162,18 @@ function createAgents(): Record<AgentRole, Agent> {
   return agents as Record<AgentRole, Agent>;
 }
 
+function createInitialAutonomousAgents(): Record<AgentRole, SwarmAgent> {
+  return {
+    pm: { role: 'pm', status: 'idle', currentTask: null, lastOutput: null },
+    engineer: { role: 'engineer', status: 'idle', currentTask: null, lastOutput: null },
+    designer: { role: 'designer', status: 'idle', currentTask: null, lastOutput: null },
+    qa: { role: 'qa', status: 'idle', currentTask: null, lastOutput: null },
+    devils_advocate: { role: 'devils_advocate', status: 'idle', currentTask: null, lastOutput: null },
+    reviewer: { role: 'reviewer', status: 'idle', currentTask: null, lastOutput: null },
+    researcher: { role: 'researcher', status: 'idle', currentTask: null, lastOutput: null },
+  };
+}
+
 let vehicleIdCounter = 0;
 let notifIdCounter = 0;
 let transactionIdCounter = 0;
@@ -255,6 +267,7 @@ rateLimiter: new RateLimitManager(DEFAULT_RATE_LIMITS),
     cooldownUntil: null,
     intervalMs: 60000,
     currentTask: null,
+    agents: createInitialAutonomousAgents(),
     completedTasks: [],
     events: [],
     seeded: false,
@@ -1318,6 +1331,18 @@ docsRegistry: getPlanRegistry(),
       const data = await res.json() as AutonomousStatus;
       const incoming = Array.isArray(data.events) ? data.events : [];
       set(state => {
+        const autonomousAgents = data.agents ?? createInitialAutonomousAgents();
+        const mergedAgents: Record<AgentRole, Agent> = { ...state.agents };
+        for (const role of Object.keys(mergedAgents) as AgentRole[]) {
+          const roleState = autonomousAgents[role];
+          if (!roleState) continue;
+          const status = roleState.status;
+          mergedAgents[role] = {
+            ...mergedAgents[role],
+            status,
+            currentTask: roleState.currentTask,
+          };
+        }
         const nextEventId = incoming.reduce(
           (max, event) => Math.max(max, event.id),
           state.autonomous.lastEventId,
@@ -1332,6 +1357,7 @@ docsRegistry: getPlanRegistry(),
         ].slice(-200);
 
         return {
+          agents: mergedAgents,
           autonomous: {
             ...state.autonomous,
             ...data,
