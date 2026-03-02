@@ -8,10 +8,13 @@ Run checks that do not require committing:
 
 ```bash
 npm run validate:docs-registry
+npm run typecheck
 npm run build
 ```
 
 If local port binding is blocked, do not run `npm run dev` or Playwright smoke runs that start a local server.
+
+`npm run typecheck` is offline-first: it tries `npm ci --prefer-offline`, supports prebuilt dependency layers (`PREBUILT_NODE_MODULES_DIR` or `PREBUILT_NODE_MODULES_TARBALL`), and falls back to changed-file validation when full installs are unavailable.
 
 ## 2) Capture your change as a patch
 

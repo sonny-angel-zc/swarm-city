@@ -9,6 +9,7 @@
     "build": "NODE_ENV=production npm run validate:docs-registry && npm run validate:next-router-roots && NODE_ENV=production next build",
     "typecheck": "node scripts/typecheck.mjs",
     "typecheck:tsc": "tsc --noEmit",
+    "validate:changed-files": "node scripts/validate-changed-files.mjs",
     "start": "next start",
     "validate:docs-registry": "node scripts/validate-docs-registry.mjs",
     "validate:next-router-roots": "node scripts/validate-next-router-roots.mjs",
