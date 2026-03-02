@@ -75,6 +75,7 @@ test('fails preflight when required tooling is unavailable', () => {
   const result = runPreflight(repo, { PATH: '' });
 
   assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_CODE: PREFLIGHT_FAILURE/);
   assert.match(result.stderr, /Required tool "npm" is unavailable\./);
 });
 
@@ -83,5 +84,11 @@ test('fails preflight when worktree is dirty', () => {
   const result = runPreflight(repo);
 
   assert.equal(result.status, 1, result.stdout);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_CODE: DIRTY_WORKTREE/);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_FIELD:modified=0/);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_FIELD:deleted=0/);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_FIELD:untracked=1/);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_FIELD:other=0/);
+  assert.match(result.stderr, /\[smoke:preflight\] FAIL_FIELD:total=1/);
   assert.match(result.stderr, /Dirty worktree detected/);
 });

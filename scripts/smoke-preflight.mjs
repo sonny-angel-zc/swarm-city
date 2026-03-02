@@ -15,7 +15,17 @@ function log(message) {
   console.log(`[smoke:preflight] ${message}`);
 }
 
-function fail(message, hint) {
+function printFailureContract(code, fields = {}) {
+  console.error(`[smoke:preflight] FAIL_CODE: ${code}`);
+  for (const [key, value] of Object.entries(fields)) {
+    if (value === undefined || value === null) continue;
+    console.error(`[smoke:preflight] FAIL_FIELD:${key}=${value}`);
+  }
+}
+
+function fail(message, hint, options = {}) {
+  const code = options.code || 'PREFLIGHT_FAILURE';
+  printFailureContract(code, options.fields);
   console.error(`[smoke:preflight] ERROR: ${message}`);
   if (hint) {
     console.error(`[smoke:preflight] HINT: ${hint}`);
@@ -136,6 +146,7 @@ function ensureCleanWorktree() {
     fail(
       'Unable to inspect git worktree state before smoke run.',
       'Ensure git is installed and run smoke preflight from the repository root.',
+      { code: 'GIT_STATUS_UNAVAILABLE' },
     );
   }
 
@@ -163,6 +174,16 @@ function ensureCleanWorktree() {
   fail(
     `Dirty worktree detected (${summaryParts.join(', ')}). Smoke preflight requires a clean repository state.`,
     `Commit/stash/discard local changes (including untracked files), then retry.\nInspect with: git status --short\n\nCurrent changes:\n${preview}${remainder}`,
+    {
+      code: 'DIRTY_WORKTREE',
+      fields: {
+        modified: summary.modified,
+        deleted: summary.deleted,
+        untracked: summary.untracked,
+        other: summary.other,
+        total: lines.length,
+      },
+    },
   );
 }
 
