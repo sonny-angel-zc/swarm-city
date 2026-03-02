@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { parseStderrDiagnostics } from './helpers/stderrDiagnostics.mjs';
 
 const SCRIPT_PATH = resolve(process.cwd(), 'scripts/smoke-preflight.mjs');
 
@@ -81,7 +82,12 @@ test('fails preflight when required tooling is unavailable', () => {
 test('fails preflight when worktree is dirty', () => {
   const repo = createRepo({ includeDependencies: false, dirty: true });
   const result = runPreflight(repo);
+  const diagnostics = parseStderrDiagnostics(result.stderr);
 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /Dirty worktree detected/);
+  assert.equal(diagnostics[0]?.level, 'ERROR');
+  assert.match(diagnostics[0]?.message ?? '', /Dirty worktree detected/);
+  assert.equal(diagnostics[1]?.level, 'HINT');
+  assert.match(diagnostics[1]?.message ?? '', /Current changes:/);
 });
