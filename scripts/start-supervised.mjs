@@ -16,6 +16,9 @@ let child = null;
 let stopping = false;
 let unhealthyCount = 0;
 let restartCount = 0;
+let restartTimer = null;
+let restartInFlight = false;
+let expectedExitForRestart = false;
 
 function ts() {
   return new Date().toISOString();
@@ -49,6 +52,7 @@ function consumeRestartSignal() {
 }
 
 function spawnDevServer() {
+  if (child && !child.killed) return;
   clearNextCache();
   ensureRuntimeDir();
   log('starting Next.js dev server');
@@ -60,23 +64,34 @@ function spawnDevServer() {
   });
 
   child.on('exit', (code, signal) => {
+    const wasExpectedRestart = expectedExitForRestart;
+    expectedExitForRestart = false;
+    child = null;
     if (stopping) return;
     log(`dev server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
+    if (wasExpectedRestart) return;
     scheduleRestart('process exit');
   });
 }
 
 function terminateChild() {
   if (!child || child.killed) return;
+  expectedExitForRestart = true;
   child.kill('SIGTERM');
 }
 
 function scheduleRestart(reason) {
+  if (stopping) return;
+  if (restartInFlight) return;
+  restartInFlight = true;
   restartCount += 1;
   unhealthyCount = 0;
   log(`restarting dev server (#${restartCount}) due to: ${reason}`);
   terminateChild();
-  setTimeout(() => {
+  if (restartTimer) clearTimeout(restartTimer);
+  restartTimer = setTimeout(() => {
+    restartInFlight = false;
+    restartTimer = null;
     if (stopping) return;
     spawnDevServer();
   }, 600);
@@ -119,6 +134,10 @@ async function watchdogTick() {
 
 function shutdown() {
   stopping = true;
+  if (restartTimer) {
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
   log('supervisor shutting down');
   terminateChild();
   process.exit(0);
