@@ -11,12 +11,12 @@ export async function POST(request: NextRequest) {
     };
 
     if (!title?.trim()) {
-      return NextResponse.json({ error: 'title is required' }, { status: 400 });
+      return NextResponse.json({ code: 'TASK_TITLE_REQUIRED', error: 'title is required' }, { status: 400 });
     }
 
     const resolvedProvider = provider ?? 'openai';
     if (resolvedProvider !== 'anthropic' && resolvedProvider !== 'openai') {
-      return NextResponse.json({ error: 'unsupported provider' }, { status: 400 });
+      return NextResponse.json({ code: 'TASK_PROVIDER_UNSUPPORTED', error: 'unsupported provider' }, { status: 400 });
     }
 
     const resolvedModel =
@@ -30,6 +30,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ taskId: task.id, task });
   } catch (err) {
     console.error('[api/tasks POST]', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ code: 'TASKS_INTERNAL_ERROR', error: 'Internal server error' }, { status: 500 });
   }
 }

@@ -13,11 +13,11 @@ export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as { enabled?: boolean };
     if (typeof body.enabled !== 'boolean') {
-      return NextResponse.json({ error: 'enabled boolean is required' }, { status: 400 });
+      return NextResponse.json({ code: 'AUTONOMOUS_ENABLED_REQUIRED', error: 'enabled boolean is required' }, { status: 400 });
     }
     setAutonomousEnabled(body.enabled);
     return NextResponse.json(getAutonomousState());
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json({ code: 'AUTONOMOUS_UPDATE_FAILED', error: String(err) }, { status: 500 });
   }
 }

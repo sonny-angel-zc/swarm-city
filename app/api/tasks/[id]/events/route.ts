@@ -8,7 +8,7 @@ export async function GET(
   const { id: taskId } = await params;
 
   if (!getTask(taskId)) {
-    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+    return NextResponse.json({ code: 'TASK_NOT_FOUND', error: 'Task not found' }, { status: 404 });
   }
 
   const encoder = new TextEncoder();

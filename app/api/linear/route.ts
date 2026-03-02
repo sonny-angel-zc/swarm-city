@@ -14,7 +14,7 @@ async function linearQuery(query: string, variables?: Record<string, unknown>) {
   });
   if (!res.ok) {
     const text = await res.text();
-    return { error: `Linear API ${res.status}: ${text}` };
+    return { code: 'LINEAR_UPSTREAM_ERROR', error: `Linear API ${res.status}: ${text}` };
   }
   return res.json();
 }
@@ -72,9 +72,9 @@ export async function POST(req: NextRequest) {
       case 'states':
         return NextResponse.json(await linearQuery(QUERIES.states, { teamId }));
       default:
-        return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+        return NextResponse.json({ code: 'LINEAR_UNKNOWN_ACTION', error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json({ code: 'LINEAR_REQUEST_FAILED', error: String(err) }, { status: 500 });
   }
 }

@@ -7,6 +7,6 @@ export async function POST() {
     const result = await seedAutonomousBacklog();
     return NextResponse.json(result);
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    return NextResponse.json({ code: 'AUTONOMOUS_SEED_FAILED', error: String(err) }, { status: 500 });
   }
 }

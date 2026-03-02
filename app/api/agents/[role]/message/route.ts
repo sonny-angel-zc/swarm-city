@@ -12,13 +12,16 @@ export async function POST(
     const { taskId, message } = body as { taskId?: string; message?: string };
 
     if (!taskId || !message?.trim()) {
-      return NextResponse.json({ error: 'taskId and message are required' }, { status: 400 });
+      return NextResponse.json(
+        { code: 'AGENT_MESSAGE_REQUIRED_FIELDS', error: 'taskId and message are required' },
+        { status: 400 },
+      );
     }
 
     addHumanMessage(taskId, role as AgentRole, message.trim());
     return NextResponse.json({ ok: true });
   } catch (err) {
     console.error('[api/agents/message POST]', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ code: 'AGENT_MESSAGE_INTERNAL_ERROR', error: 'Internal server error' }, { status: 500 });
   }
 }
