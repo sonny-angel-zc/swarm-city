@@ -1,4 +1,6 @@
 import path from 'path';
+import { execSync } from 'child_process';
+import { writeFileSync } from 'fs';
 import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType } from './linearServer';
 import { detectRetryKind, executeAutonomousTaskWithCodex, runCodexExec } from './orchestrator';
 
@@ -38,16 +40,22 @@ export type AutonomousState = {
 
 type Runtime = {
   started: boolean;
+  bootstrapped: boolean;
   timer: NodeJS.Timeout | null;
   state: AutonomousState;
   eventId: number;
   lock: boolean;
+  consecutiveErrors: number;
 };
 
 const DEFAULT_INTERVAL_MS = Number(process.env.SWARM_AUTONOMOUS_INTERVAL_MS ?? '60000');
 const DEFAULT_COOLDOWN_MS = Number(process.env.SWARM_AUTONOMOUS_COOLDOWN_MS ?? '90000');
+const ERROR_COOLDOWN_MS = 120_000;
+const STUCK_STARTED_MS = 10 * 60_000;
 const DEFAULT_ENABLED = (process.env.SWARM_AUTONOMOUS_DEFAULT_ON ?? 'true').toLowerCase() !== 'false';
 const PROJECT_ROOT = path.resolve(process.cwd());
+const DEV_HEALTH_URL = process.env.SWARM_DEV_HEALTH_URL ?? 'http://127.0.0.1:3000/api/autonomous/health';
+const DEV_RESTART_SIGNAL = process.env.SWARM_DEV_RESTART_SIGNAL ?? '/tmp/swarm-city-dev-restart.signal';
 
 const SEED_TASKS: Array<{ title: string; description: string; priority: number }> = [
   {
@@ -103,10 +111,12 @@ function createInitialState(): AutonomousState {
 if (!globalRuntime.__swarmAutonomousRuntime) {
   globalRuntime.__swarmAutonomousRuntime = {
     started: false,
+    bootstrapped: false,
     timer: null,
     state: createInitialState(),
     eventId: 0,
     lock: false,
+    consecutiveErrors: 0,
   };
 }
 
@@ -130,6 +140,172 @@ function toPriorityValue(priority: string): number {
 function normalizePriority(raw: unknown): 'P2' | 'P3' {
   const text = String(raw ?? '').toUpperCase();
   return text.includes('P2') ? 'P2' : 'P3';
+}
+
+function parseLines(cmd: string): string[] {
+  try {
+    const out = execSync(cmd, { cwd: PROJECT_ROOT, stdio: ['ignore', 'pipe', 'pipe'] }).toString();
+    return out.split('\n').map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function hasActiveCodexProcess(): boolean {
+  const commands = parseLines('ps -ax -o command=');
+  return commands.some((command) => {
+    const normalized = command.toLowerCase();
+    return normalized.includes('codex') && normalized.includes(' exec');
+  });
+}
+
+async function recoverStuckStartedIssues() {
+  const issues = await listLinearIssues(LINEAR_TEAM_ID);
+  const started = issues.filter((issue) => (issue.state?.type ?? '') === 'started');
+  if (started.length === 0) return;
+  if (hasActiveCodexProcess()) {
+    addEvent(`Skipped stuck-task recovery (${started.length} started issue(s), active Codex process detected).`);
+    return;
+  }
+
+  const now = Date.now();
+  let resetCount = 0;
+  for (const issue of started) {
+    const ageMs = now - new Date(issue.updatedAt).getTime();
+    if (ageMs < STUCK_STARTED_MS) continue;
+    const reset = await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
+    if (reset) resetCount += 1;
+  }
+  if (resetCount > 0) {
+    addEvent(`Recovered ${resetCount} stuck started issue(s) back to unstarted.`);
+  }
+}
+
+function parseWorktreeList(): Array<{ path: string; branch: string | null }> {
+  const raw = parseLines('git worktree list --porcelain');
+  const out: Array<{ path: string; branch: string | null }> = [];
+  let current: { path: string; branch: string | null } | null = null;
+  for (const line of raw) {
+    if (line.startsWith('worktree ')) {
+      if (current) out.push(current);
+      current = { path: line.replace(/^worktree\s+/, '').trim(), branch: null };
+      continue;
+    }
+    if (line.startsWith('branch ') && current) {
+      current.branch = line.replace(/^branch\s+refs\/heads\//, '').trim();
+    }
+  }
+  if (current) out.push(current);
+  return out;
+}
+
+function hasProcessInPath(targetPath: string): boolean {
+  const commands = parseLines('ps -ax -o command=');
+  return commands.some((command) => command.includes(targetPath));
+}
+
+async function cleanupOrphanedWorktreesAndBranches() {
+  try {
+    execSync('git worktree prune', { cwd: PROJECT_ROOT, stdio: 'pipe' });
+  } catch {
+    // continue best-effort cleanup
+  }
+
+  const worktrees = parseWorktreeList();
+  const rootPath = path.resolve(PROJECT_ROOT);
+  let removedWorktrees = 0;
+  for (const wt of worktrees) {
+    const wtPath = path.resolve(wt.path);
+    if (wtPath === rootPath) continue;
+    if (hasProcessInPath(wtPath)) continue;
+    try {
+      execSync(`git worktree remove --force "${wtPath}"`, { cwd: PROJECT_ROOT, stdio: 'pipe' });
+      removedWorktrees += 1;
+    } catch {
+      // leave it if remove fails
+    }
+  }
+  if (removedWorktrees > 0) {
+    addEvent(`Pruned ${removedWorktrees} orphaned worktree(s).`);
+  }
+
+  const issues = await listLinearIssues(LINEAR_TEAM_ID);
+  const doneIssues = issues.filter((issue) => {
+    const stateType = issue.state?.type ?? '';
+    return stateType === 'completed' || stateType === 'canceled' || stateType === 'cancelled';
+  });
+  if (doneIssues.length === 0) return;
+
+  const branches = new Set(parseLines('git for-each-ref --format="%(refname:short)" refs/heads'));
+  const currentBranch = parseLines('git branch --show-current')[0] ?? '';
+  let deletedBranches = 0;
+
+  for (const issue of doneIssues) {
+    const key = issue.identifier.toLowerCase();
+    const candidates = new Set([
+      key,
+      issue.identifier,
+      `swarm/${key}`,
+      `swarm/${issue.identifier}`,
+      `linear/${key}`,
+      `linear/${issue.identifier}`,
+      `issue/${key}`,
+      `issue/${issue.identifier}`,
+    ]);
+    for (const branch of candidates) {
+      if (!branches.has(branch) || branch === currentBranch) continue;
+      try {
+        execSync(`git branch -D "${branch}"`, { cwd: PROJECT_ROOT, stdio: 'pipe' });
+        branches.delete(branch);
+        deletedBranches += 1;
+      } catch {
+        // keep branch if delete fails
+      }
+    }
+  }
+  if (deletedBranches > 0) {
+    addEvent(`Cleaned up ${deletedBranches} completed/canceled branch(es).`);
+  }
+}
+
+async function requestDevServerRestart(): Promise<boolean> {
+  try {
+    writeFileSync(DEV_RESTART_SIGNAL, String(Date.now()), 'utf8');
+  } catch {
+    return false;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 4000));
+  try {
+    const res = await fetch(DEV_HEALTH_URL, { cache: 'no-store' });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureDevServerHealthy(): Promise<boolean> {
+  try {
+    const res = await fetch(DEV_HEALTH_URL, { cache: 'no-store' });
+    if (res.ok) return true;
+  } catch {
+    // retry via restart signal below
+  }
+  addEvent('Dev server health check failed. Attempting supervised restart.', 'warning');
+  const restarted = await requestDevServerRestart();
+  if (!restarted) {
+    addEvent('Dev server restart attempt failed; skipping task tick.', 'error');
+  } else {
+    addEvent('Dev server recovered after supervised restart.');
+  }
+  return restarted;
+}
+
+async function bootstrapSelfHealing() {
+  const rt = runtime();
+  if (rt.bootstrapped) return;
+  rt.bootstrapped = true;
+  await cleanupOrphanedWorktreesAndBranches();
+  await recoverStuckStartedIssues();
 }
 
 async function generateImprovements(summary: string): Promise<Array<{ title: string; description: string; priority: 'P2' | 'P3' }>> {
@@ -200,6 +376,7 @@ export async function seedAutonomousBacklog(): Promise<{ created: number; skippe
 async function tickLoop() {
   const rt = runtime();
   if (!rt.state.enabled || rt.lock) return;
+  let tickFailed = false;
 
   const now = Date.now();
   rt.state.lastTickAt = now;
@@ -218,6 +395,10 @@ async function tickLoop() {
   rt.state.running = true;
 
   try {
+    if (!(await ensureDevServerHealthy())) {
+      return;
+    }
+
     if (!rt.state.seeded) {
       const seed = await seedAutonomousBacklog();
       rt.state.seeded = true;
@@ -303,8 +484,20 @@ async function tickLoop() {
       addEvent(`Generated ${generatedCount} follow-up improvement task(s).`);
     }
   } catch (err) {
+    tickFailed = true;
+    rt.consecutiveErrors += 1;
     addEvent(`Autonomous loop error: ${String(err)}`, 'error');
+    if (rt.consecutiveErrors >= 3) {
+      rt.state.paused = true;
+      rt.state.cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
+      rt.state.pauseReason = 'Too many consecutive autonomous loop errors.';
+      addEvent('Paused autonomous loop for 120s after 3 consecutive errors.', 'warning');
+      rt.consecutiveErrors = 0;
+    }
   } finally {
+    if (!tickFailed) {
+      rt.consecutiveErrors = 0;
+    }
     rt.state.running = false;
     rt.lock = false;
   }
@@ -315,6 +508,9 @@ export function startAutonomousLoop() {
   if (rt.started) return;
   rt.started = true;
   addEvent('Autonomous loop booted.');
+  void bootstrapSelfHealing().catch((err) => {
+    addEvent(`Self-healing bootstrap error: ${String(err)}`, 'error');
+  });
 
   if (!rt.state.enabled) return;
   void tickLoop();
