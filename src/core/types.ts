@@ -24,6 +24,7 @@ export type Agent = {
   status: AgentStatus;
   currentTask: string | null;
   progress: number;    // 0-1
+  output: string | null;
   log: LogEntry[];
   building: BuildingConfig;
   contextUsed: number;    // 0-1, how full the context window is
@@ -51,6 +52,7 @@ export type SubTask = {
 export type Task = {
   id: string;
   title: string;
+  description?: string;
   subtasks: SubTask[];
   status: 'decomposing' | 'in_progress' | 'review' | 'done';
   createdAt: number;

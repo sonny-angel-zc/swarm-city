@@ -147,6 +147,11 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
                           <span className="text-[10px] text-blue-400 font-mono ml-auto">{Math.round(agent.progress * 100)}%</span>
                         )}
                       </div>
+                      {agent.currentTask && (
+                        <div className="text-[10px] text-white/35 mt-0.5 truncate">
+                          {agent.currentTask}
+                        </div>
+                      )}
                       {/* Budget progress bar */}
                       {budget.tokensSpent > 0 && (
                         <div className="w-full h-0.5 bg-white/5 rounded-full mt-1 overflow-hidden">

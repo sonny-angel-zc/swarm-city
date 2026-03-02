@@ -63,6 +63,13 @@ export default function InspectPanel() {
         </div>
       )}
 
+      {agent.output && (
+        <div className="px-4 py-2 border-b border-[#21262d]">
+          <p className="text-[10px] text-white/30 uppercase tracking-wider">Latest Output</p>
+          <p className="text-xs text-white/60 mt-0.5 line-clamp-3">{agent.output}</p>
+        </div>
+      )}
+
       {/* Activity Log */}
       <div className="px-4 py-2 max-h-36 overflow-y-auto">
         <p className="text-[10px] text-white/30 uppercase tracking-wider mb-1">Activity Log</p>

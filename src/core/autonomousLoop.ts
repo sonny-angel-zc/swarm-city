@@ -5,7 +5,7 @@ import {
   cleanupAutonomousBranchesForClosedIssues,
   cleanupStaleAutonomousWorktrees,
   detectRetryKind,
-  executeAutonomousTaskWithCodex,
+  executeAutonomousTaskWithCityHall,
   hasActiveCodexProcess,
   runAutonomousPreflight,
   runCodexExec,
@@ -386,7 +386,7 @@ async function tickLoop() {
       return;
     }
 
-    const execution = await executeAutonomousTaskWithCodex({
+    const execution = await executeAutonomousTaskWithCityHall({
       title: issue.title,
       description: issue.description,
       issueIdentifier: issue.identifier,
@@ -396,7 +396,7 @@ async function tickLoop() {
     });
 
     const tokenSummary = `input=${execution.usage.inputTokens.toLocaleString()}, output=${execution.usage.outputTokens.toLocaleString()}, total=${execution.usage.totalTokens.toLocaleString()}`;
-    addEvent(`[telemetry] Codex isolated context for ${issue.identifier} (${execution.usage.model}); ${tokenSummary}`);
+    addEvent(`[telemetry] City Hall orchestration for ${issue.identifier} (${execution.usage.model}); ${tokenSummary}`);
     if (execution.usage.totalTokens > Math.max(1, DEFAULT_EXPECTED_TOKENS_PER_TURN)) {
       addEvent(
         `[telemetry] Token usage exceeded expected turn budget (${execution.usage.totalTokens.toLocaleString()} > ${DEFAULT_EXPECTED_TOKENS_PER_TURN.toLocaleString()}).`,

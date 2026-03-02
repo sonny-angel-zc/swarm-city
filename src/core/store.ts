@@ -43,13 +43,16 @@ type SSEEvent =
   | { type: 'decomposition_start'; taskId: string }
   | { type: 'decomposition_stalled'; taskId: string; elapsedMs: number; thresholdMs: number; reason?: string; suggestedAction?: string }
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
+  | { type: 'agent_status'; taskId: string; role: AgentRole; status: AgentStatus; currentTask: string | null; progress: number; output?: string }
   | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
+  | { type: 'agent_retry'; taskId: string; role: AgentRole; message: string }
   | { type: 'agent_done'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_usage'; taskId: string; role: AgentRole; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; costUsd: number; model: string } }
   | { type: 'agent_error'; taskId: string; role: AgentRole; error: string }
+  | { type: 'task_failed'; taskId: string; error: string }
   | { type: 'task_complete'; taskId: string };
 
 type SwarmStore = {
@@ -152,6 +155,7 @@ function createAgents(): Record<AgentRole, Agent> {
       status: 'idle',
       currentTask: null,
       progress: 0,
+      output: null,
       log: [],
       building: cfg,
       contextUsed: 0,
@@ -860,6 +864,34 @@ docsRegistry: getPlanRegistry(),
         break;
       }
 
+      case 'agent_status': {
+        const role = event.role;
+        const building = agents[role].building.name;
+        const statusText = event.status === 'needs_input' ? 'needs input' : event.status;
+        agents[role] = {
+          ...agents[role],
+          status: event.status,
+          currentTask: event.currentTask,
+          progress: Math.max(0, Math.min(1, event.progress)),
+          output: event.output ?? agents[role].output,
+          log: [
+            ...agents[role].log,
+            {
+              timestamp: now,
+              message: `${event.status.toUpperCase()}${event.currentTask ? `: ${event.currentTask}` : ''}`,
+              type: event.status === 'blocked' ? 'error' : 'info',
+            },
+          ].slice(-20) as LogEntry[],
+        };
+        log.push({
+          timestamp: now,
+          message: `${building} ${statusText}${event.currentTask ? `: ${event.currentTask}` : ''}`,
+          type: event.status === 'blocked' ? 'error' : 'info',
+        });
+        set({ agents, activityLog: log.slice(-100) });
+        break;
+      }
+
       case 'agent_workspace': {
         const mode = event.created ? 'created' : 'reused';
         log.push({
@@ -923,6 +955,7 @@ docsRegistry: getPlanRegistry(),
         const lastLine = lines[lines.length - 1] || event.output.slice(0, 100);
         agents[role] = {
           ...agents[role],
+          output: event.output,
           log: [
             ...agents[role].log,
             { timestamp: Date.now(), message: lastLine.slice(0, 200), type: 'output' },
@@ -982,12 +1015,31 @@ docsRegistry: getPlanRegistry(),
         break;
       }
 
+      case 'agent_retry': {
+        const role = event.role;
+        agents[role] = {
+          ...agents[role],
+          log: [
+            ...agents[role].log,
+            { timestamp: now, message: `↻ ${event.message}`, type: 'info' },
+          ].slice(-20) as LogEntry[],
+        };
+        log.push({
+          timestamp: now,
+          message: `${agents[role].building.name} retrying: ${event.message}`,
+          type: 'info',
+        });
+        set({ agents, activityLog: log.slice(-100) });
+        break;
+      }
+
       case 'agent_done': {
         const role = event.role;
         agents[role] = {
           ...agents[role],
           status: 'done',
           progress: 1,
+          output: event.output,
           log: [
             ...agents[role].log,
             { timestamp: Date.now(), message: `✅ Completed task`, type: 'output' },
@@ -1080,6 +1132,7 @@ docsRegistry: getPlanRegistry(),
         agents[role] = {
           ...agents[role],
           status: 'blocked',
+          output: event.error,
           log: [
             ...agents[role].log,
             { timestamp: Date.now(), message: `❌ Error: ${event.error}`, type: 'error' },
@@ -1108,6 +1161,33 @@ docsRegistry: getPlanRegistry(),
           notifications,
           activityLog: log.slice(-100),
           backlog: [backlogItem, ...state.backlog].slice(0, 40),
+        });
+        break;
+      }
+
+      case 'task_failed': {
+        const task = state.currentTask;
+        if (task) {
+          set({ currentTask: { ...task, status: 'in_progress' } });
+        }
+        log.push({ timestamp: now, message: `Task failed: ${event.error}`, type: 'error' });
+        notifications.push({
+          id: `notif-${notifIdCounter++}`,
+          agentRole: 'pm',
+          message: `City Hall blocked: ${event.error.slice(0, 120)}`,
+          type: 'warning',
+          timestamp: now,
+          read: false,
+        });
+        const es = state.eventSource;
+        if (es) es.close();
+        try { localStorage.removeItem('swarm:lastTaskId'); } catch {}
+        set({
+          agents,
+          notifications,
+          activityLog: log.slice(-100),
+          eventSource: null,
+          currentTaskId: null,
         });
         break;
       }

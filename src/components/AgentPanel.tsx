@@ -108,6 +108,12 @@ export default function AgentPanel() {
 
         {/* Description */}
         <p className="mt-3 text-[11px] text-white/30">{b.description}</p>
+        {agent.output && (
+          <div className="mt-2 p-2 rounded-md bg-[#161b22] border border-[#21262d]">
+            <p className="text-[10px] text-white/30 uppercase tracking-wider mb-1">Latest Output</p>
+            <p className="text-[11px] text-white/60 line-clamp-3">{agent.output}</p>
+          </div>
+        )}
       </div>
 
       {/* Log stream */}

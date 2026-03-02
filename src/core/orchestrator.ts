@@ -3,7 +3,7 @@ import { spawn, execSync, spawnSync } from 'child_process';
 import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import os from 'os';
 import path from 'path';
-import { AgentRole, SubTask, Task } from './types';
+import { AgentRole, AgentStatus, SubTask, Task } from './types';
 
 // ─── SSE Event Types ──────────────────────────────────────────────────────────
 
@@ -11,13 +11,16 @@ export type SSEEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'decomposition_start'; taskId: string }
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
+  | { type: 'agent_status'; taskId: string; role: AgentRole; status: AgentStatus; currentTask: string | null; progress: number; output?: string }
   | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
+  | { type: 'agent_retry'; taskId: string; role: AgentRole; message: string }
   | { type: 'agent_done'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_usage'; taskId: string; role: AgentRole; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; costUsd: number; model: string } }
   | { type: 'agent_error'; taskId: string; role: AgentRole; error: string }
+  | { type: 'task_failed'; taskId: string; error: string }
   | { type: 'task_complete'; taskId: string };
 
 export type SSEListener = (event: SSEEvent) => void;
@@ -30,6 +33,13 @@ type TaskState = {
   history: SSEEvent[];
   accumulatedContext: string[];
   humanMessages: Map<AgentRole, string[]>;
+  agentRuntime: Record<AgentRole, {
+    status: AgentStatus;
+    currentTask: string | null;
+    progress: number;
+    output: string | null;
+    updatedAt: number | null;
+  }>;
   agentConfig: {
     provider: 'anthropic' | 'openai';
     model: string;
@@ -45,14 +55,22 @@ const taskStates = globalForTasks.__swarmTaskStates;
 
 // ─── Agent config ─────────────────────────────────────────────────────────────
 
-// Sequential execution order (PM runs first for decomposition, then these in order)
+// Role order used for fallback decomposition and summaries.
 const AGENT_ORDER: AgentRole[] = [
-  'researcher',
-  'designer',
   'engineer',
+  'designer',
   'qa',
   'devils_advocate',
   'reviewer',
+  'researcher',
+];
+
+const EXECUTION_STAGES: AgentRole[][] = [
+  ['engineer', 'designer'],
+  ['qa'],
+  ['devils_advocate'],
+  ['reviewer'],
+  ['researcher'],
 ];
 
 const AGENT_SYSTEM_PROMPTS: Record<AgentRole, string> = {
@@ -70,10 +88,39 @@ const AGENT_SYSTEM_PROMPTS: Record<AgentRole, string> = {
 function emitEvent(taskId: string, event: SSEEvent) {
   const state = taskStates.get(taskId);
   if (!state) return;
+  if (event.type === 'agent_status') {
+    state.agentRuntime[event.role] = {
+      status: event.status,
+      currentTask: event.currentTask,
+      progress: Math.max(0, Math.min(1, event.progress)),
+      output: event.output ?? state.agentRuntime[event.role].output,
+      updatedAt: Date.now(),
+    };
+  } else if (event.type === 'agent_output') {
+    state.agentRuntime[event.role] = {
+      ...state.agentRuntime[event.role],
+      output: event.output,
+      updatedAt: Date.now(),
+    };
+  }
   state.history.push(event);
   for (const listener of state.listeners) {
     try { listener(event); } catch {}
   }
+}
+
+function createInitialAgentRuntime(): TaskState['agentRuntime'] {
+  const entries = (['pm', ...AGENT_ORDER] as AgentRole[]).map((role) => [
+    role,
+    {
+      status: 'idle' as AgentStatus,
+      currentTask: null,
+      progress: 0,
+      output: null,
+      updatedAt: null,
+    },
+  ]);
+  return Object.fromEntries(entries) as TaskState['agentRuntime'];
 }
 
 function sanitizeSegment(value: string): string {
@@ -1112,6 +1159,103 @@ export async function executeAutonomousTaskWithCodex(params: {
   }
 }
 
+export async function executeAutonomousTaskWithCityHall(params: {
+  title: string;
+  description?: string | null;
+  issueIdentifier: string;
+  workDir: string;
+  model?: string;
+  preflight?: AutonomousPreflightResult;
+}): Promise<AutonomousExecutionResult> {
+  const model = params.model ?? 'gpt-5.3-codex';
+  const preflight = params.preflight ?? runAutonomousPreflight(params.workDir);
+  const issueInputProblem = getIssueInputProblem(params.title, params.description);
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    model,
+  };
+  if (issueInputProblem) {
+    return {
+      ok: false,
+      output: issueInputProblem,
+      restarts: [],
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  }
+
+  const task = createTask(
+    `[${params.issueIdentifier}] ${params.title}`,
+    { provider: 'openai', model },
+    { description: params.description ?? undefined },
+  );
+
+  const outputByRole = new Map<AgentRole, string>();
+  const retryMessages: string[] = [];
+  let failedError: string | null = null;
+  const timeoutMs = Math.max(120_000, Number(process.env.SWARM_AUTONOMOUS_TASK_TIMEOUT_MS ?? '3600000'));
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      failedError = `City Hall orchestration timed out after ${Math.round(timeoutMs / 1000)}s`;
+      unsubscribe();
+      resolve();
+    }, timeoutMs);
+
+    const unsubscribe = subscribeToTask(task.id, (event) => {
+      if (event.type === 'agent_done') {
+        outputByRole.set(event.role, event.output);
+      } else if (event.type === 'agent_retry') {
+        retryMessages.push(event.message);
+      } else if (event.type === 'agent_usage') {
+        usage.inputTokens += event.usage.inputTokens;
+        usage.outputTokens += event.usage.outputTokens;
+        usage.totalTokens += event.usage.inputTokens + event.usage.outputTokens + event.usage.cacheCreateTokens;
+        if (event.usage.model) usage.model = event.usage.model;
+      } else if (event.type === 'task_failed') {
+        failedError = event.error;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      } else if (event.type === 'task_complete') {
+        clearTimeout(timer);
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+
+  if (failedError) {
+    return {
+      ok: false,
+      output: failedError,
+      restarts: retryMessages,
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  }
+
+  const ordered = (['engineer', 'designer', 'qa', 'devils_advocate', 'reviewer', 'researcher'] as AgentRole[])
+    .map((role) => outputByRole.get(role))
+    .filter((value): value is string => Boolean(value));
+
+  return {
+    ok: true,
+    output: ordered.join('\n\n---\n\n'),
+    restarts: retryMessages,
+    rateLimited: false,
+    retryAfterMs: null,
+    preflight,
+    usage,
+  };
+}
+
 async function runAgentWithRecovery(
   taskId: string,
   role: AgentRole,
@@ -1141,10 +1285,10 @@ async function runAgentWithRecovery(
       }
 
       emitEvent(taskId, {
-        type: 'agent_error',
+        type: 'agent_retry',
         taskId,
         role,
-        error: `Auto-restart (${kind}) in ${Math.ceil(waitMs / 1000)}s [attempt ${attempt + 1}/${maxAttempts}]`,
+        message: `Auto-restart (${kind}) in ${Math.ceil(waitMs / 1000)}s [attempt ${attempt + 1}/${maxAttempts}]`,
       });
       await delay(waitMs);
     }
@@ -1168,9 +1312,18 @@ function runAgent(
 async function runPMDecomposition(
   taskId: string,
   title: string,
+  description: string | undefined,
   agentConfig: TaskState['agentConfig'],
 ): Promise<SubTask[]> {
   const worktree = setupWorkDir(taskId, 'pm');
+  emitEvent(taskId, {
+    type: 'agent_status',
+    taskId,
+    role: 'pm',
+    status: 'working',
+    currentTask: 'Decomposing work for all districts',
+    progress: 0.05,
+  });
   emitEvent(taskId, {
     type: 'agent_workspace',
     taskId,
@@ -1182,17 +1335,25 @@ async function runPMDecomposition(
   emitEvent(taskId, { type: 'decomposition_start', taskId });
 
   const prompt =
-    `You are a PM. Decompose this task into exactly 6 subtasks for a software team.\n` +
+    `You are City Hall PM. Decompose this task into exactly 6 executable subtasks.\n` +
     `Task: "${title}"\n\n` +
-    `Agents (use each EXACTLY once, in this order): researcher, designer, engineer, qa, devils_advocate, reviewer\n\n` +
+    `Description: "${description ?? '(no description provided)'}"\n\n` +
+    `Agents (use each EXACTLY once, in this order): engineer, designer, qa, devils_advocate, reviewer, researcher\n\n` +
+    `Role intent:\n` +
+    `- engineer = Workshop (implementation)\n` +
+    `- designer = Studio (UI/UX)\n` +
+    `- qa = Testing Lab (build/type/lint verification)\n` +
+    `- devils_advocate = Dark Tower (deployment and infra checks)\n` +
+    `- reviewer = Courthouse (code review and regressions)\n` +
+    `- researcher = Library (docs and architecture notes)\n\n` +
     `Respond with ONLY a valid JSON array — no markdown, no prose:\n` +
     `[\n` +
-    `  {"role":"researcher","title":"Research: <task>","description":"<detail>"},\n` +
-    `  {"role":"designer","title":"Design: <task>","description":"<detail>"},\n` +
     `  {"role":"engineer","title":"Implement: <task>","description":"<detail>"},\n` +
+    `  {"role":"designer","title":"Design: <task>","description":"<detail>"},\n` +
     `  {"role":"qa","title":"Test: <task>","description":"<detail>"},\n` +
-    `  {"role":"devils_advocate","title":"Challenge: <task>","description":"<detail>"},\n` +
-    `  {"role":"reviewer","title":"Review: <task>","description":"<detail>"}\n` +
+    `  {"role":"devils_advocate","title":"Deploy/Infra: <task>","description":"<detail>"},\n` +
+    `  {"role":"reviewer","title":"Review: <task>","description":"<detail>"},\n` +
+    `  {"role":"researcher","title":"Document: <task>","description":"<detail>"}\n` +
     `]`;
 
   let rawOutput = '';
@@ -1207,6 +1368,14 @@ async function runPMDecomposition(
     const jsonMatch = rawOutput.match(/\[[\s\S]*\]/);
     if (jsonMatch) {
       const parsed: { role: AgentRole; title: string; description: string }[] = JSON.parse(jsonMatch[0]);
+      emitEvent(taskId, {
+        type: 'agent_status',
+        taskId,
+        role: 'pm',
+        status: 'working',
+        currentTask: 'Dispatching role plan',
+        progress: 0.25,
+      });
       return parsed.map((s, i) => ({
         id: `st-${taskId}-${i}`,
         title: s.title,
@@ -1231,6 +1400,110 @@ async function runPMDecomposition(
 
 // ─── Main orchestration loop ──────────────────────────────────────────────────
 
+async function runRoleSubtask(params: {
+  taskId: string;
+  role: AgentRole;
+  subtask: SubTask;
+  state: TaskState;
+  baseContext: string;
+}): Promise<{ role: AgentRole; output: string }> {
+  const { taskId, role, subtask, state, baseContext } = params;
+  subtask.status = 'in_progress';
+  emitEvent(taskId, { type: 'agent_assigned', taskId, subtask: { ...subtask }, role });
+  emitEvent(taskId, {
+    type: 'agent_status',
+    taskId,
+    role,
+    status: 'working',
+    currentTask: subtask.title,
+    progress: 0.1,
+  });
+
+  const worktree = setupWorkDir(taskId, role);
+  emitEvent(taskId, {
+    type: 'agent_workspace',
+    taskId,
+    role,
+    worktreePath: worktree.dir,
+    branch: worktree.branch,
+    created: worktree.created,
+  });
+
+  const humanMsgs = (state.humanMessages.get(role) ?? []).join('\n');
+  const agentPrompt = [
+    baseContext && `Context from prior completed stages:\n${baseContext}`,
+    humanMsgs && `Human messages:\n${humanMsgs}`,
+    `Your task: ${subtask.title}\n${subtask.description}`,
+  ].filter(Boolean).join('\n\n---\n\n');
+
+  const output = await runAgent(taskId, role, agentPrompt, worktree.dir, state.agentConfig);
+  subtask.status = 'done';
+  subtask.progress = 1;
+  emitEvent(taskId, {
+    type: 'agent_status',
+    taskId,
+    role,
+    status: 'done',
+    currentTask: subtask.title,
+    progress: 1,
+    output,
+  });
+  emitEvent(taskId, { type: 'agent_done', taskId, role, output });
+  return { role, output };
+}
+
+async function runStage(params: {
+  taskId: string;
+  state: TaskState;
+  roles: AgentRole[];
+  subtasksByRole: Map<AgentRole, SubTask>;
+}): Promise<string[]> {
+  const { taskId, state, roles, subtasksByRole } = params;
+  const stageRoles = roles.filter((role) => subtasksByRole.has(role));
+  if (stageRoles.length === 0) return [];
+
+  const concurrencyLimit = Math.max(1, Number(process.env.SWARM_MAX_PARALLEL_AGENTS ?? '2'));
+  const queue = [...stageRoles];
+  const stageContext = state.accumulatedContext.join('\n\n---\n\n');
+  const outputs: string[] = [];
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const role = queue.shift();
+      if (!role) continue;
+      const subtask = subtasksByRole.get(role);
+      if (!subtask) continue;
+      try {
+        const result = await runRoleSubtask({
+          taskId,
+          role,
+          subtask,
+          state,
+          baseContext: stageContext,
+        });
+        outputs.push(`## ${result.role.toUpperCase()}:\n${result.output}`);
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : String(err);
+        emitEvent(taskId, {
+          type: 'agent_status',
+          taskId,
+          role,
+          status: 'blocked',
+          currentTask: subtask.title,
+          progress: subtask.progress,
+          output: errorText,
+        });
+        emitEvent(taskId, { type: 'agent_error', taskId, role, error: errorText });
+        throw err;
+      }
+    }
+  };
+
+  const workers = Array.from({ length: Math.min(concurrencyLimit, stageRoles.length) }, () => worker());
+  await Promise.all(workers);
+  return outputs;
+}
+
 async function orchestrate(taskId: string) {
   const state = taskStates.get(taskId);
   if (!state) return;
@@ -1240,51 +1513,68 @@ async function orchestrate(taskId: string) {
     emitEvent(taskId, { type: 'task_created', task: state.task });
 
     // PM decomposition
-    const subtasks = await runPMDecomposition(taskId, state.task.title, state.agentConfig);
+    const subtasks = await runPMDecomposition(taskId, state.task.title, state.task.description, state.agentConfig);
     state.task = { ...state.task, subtasks, status: 'in_progress' };
     emitEvent(taskId, { type: 'decomposition_complete', taskId, subtasks });
+    emitEvent(taskId, {
+      type: 'agent_status',
+      taskId,
+      role: 'pm',
+      status: 'working',
+      currentTask: 'Orchestrating city execution pipeline',
+      progress: 0.35,
+    });
 
-    // Run agents sequentially
+    const subtasksByRole = new Map<AgentRole, SubTask>();
     for (const subtask of subtasks) {
-      const role = subtask.assignedTo;
+      subtasksByRole.set(subtask.assignedTo, subtask);
+    }
 
-      subtask.status = 'in_progress';
-      emitEvent(taskId, { type: 'agent_assigned', taskId, subtask: { ...subtask }, role });
-
-      const worktree = setupWorkDir(taskId, role);
-      emitEvent(taskId, {
-        type: 'agent_workspace',
+    let completedRoles = 0;
+    const totalRoles = EXECUTION_STAGES.reduce((sum, stage) => sum + stage.filter((role) => subtasksByRole.has(role)).length, 0);
+    for (const stageRoles of EXECUTION_STAGES) {
+      const stageOutput = await runStage({
         taskId,
-        role,
-        worktreePath: worktree.dir,
-        branch: worktree.branch,
-        created: worktree.created,
+        state,
+        roles: stageRoles,
+        subtasksByRole,
       });
+      for (const item of stageOutput) state.accumulatedContext.push(item);
 
-      // Build prompt — prepend prior context
-      const priorContext = state.accumulatedContext.join('\n\n---\n\n');
-      const humanMsgs = (state.humanMessages.get(role) ?? []).join('\n');
-      const agentPrompt = [
-        priorContext && `Context from prior agents:\n${priorContext}`,
-        humanMsgs && `Human messages:\n${humanMsgs}`,
-        `Your task: ${subtask.title}\n${subtask.description}`,
-      ].filter(Boolean).join('\n\n---\n\n');
-
-      try {
-        const output = await runAgent(taskId, role, agentPrompt, worktree.dir, state.agentConfig);
-        state.accumulatedContext.push(`## ${role.toUpperCase()}:\n${output}`);
-        subtask.status = 'done';
-        subtask.progress = 1;
-        emitEvent(taskId, { type: 'agent_done', taskId, role, output });
-      } catch (err) {
-        subtask.status = 'done';
-        emitEvent(taskId, { type: 'agent_error', taskId, role, error: String(err) });
-      }
+      completedRoles += stageRoles.filter((role) => subtasksByRole.has(role)).length;
+      emitEvent(taskId, {
+        type: 'agent_status',
+        taskId,
+        role: 'pm',
+        status: 'working',
+        currentTask: 'Monitoring active districts',
+        progress: totalRoles > 0 ? 0.35 + (completedRoles / totalRoles) * 0.6 : 0.95,
+      });
     }
 
     state.task.status = 'done';
+    emitEvent(taskId, {
+      type: 'agent_status',
+      taskId,
+      role: 'pm',
+      status: 'done',
+      currentTask: 'Task completed',
+      progress: 1,
+      output: 'City Hall orchestration complete',
+    });
     emitEvent(taskId, { type: 'task_complete', taskId });
   } catch (err) {
+    const errorText = err instanceof Error ? err.message : String(err);
+    emitEvent(taskId, {
+      type: 'agent_status',
+      taskId,
+      role: 'pm',
+      status: 'blocked',
+      currentTask: 'Handling blocker',
+      progress: 0.35,
+      output: errorText,
+    });
+    emitEvent(taskId, { type: 'task_failed', taskId, error: errorText });
     console.error('[orchestrator] orchestration error for task', taskId, err);
   }
 }
@@ -1294,6 +1584,7 @@ async function orchestrate(taskId: string) {
 export function createTask(
   title: string,
   config?: { provider?: 'anthropic' | 'openai'; model?: string },
+  options?: { description?: string },
 ): Task {
   const taskId = `task-${Date.now()}`;
   const provider = config?.provider ?? 'openai';
@@ -1303,6 +1594,7 @@ export function createTask(
   const task: Task = {
     id: taskId,
     title,
+    description: options?.description?.trim() || undefined,
     subtasks: [],
     status: 'decomposing',
     createdAt: Date.now(),
@@ -1314,6 +1606,7 @@ export function createTask(
     history: [],
     accumulatedContext: [],
     humanMessages: new Map(),
+    agentRuntime: createInitialAgentRuntime(),
     agentConfig: { provider, model },
   });
 
@@ -1338,6 +1631,10 @@ export function subscribeToTask(taskId: string, listener: SSEListener): () => vo
 
 export function getTask(taskId: string): Task | undefined {
   return taskStates.get(taskId)?.task;
+}
+
+export function getTaskAgentRuntime(taskId: string): TaskState['agentRuntime'] | undefined {
+  return taskStates.get(taskId)?.agentRuntime;
 }
 
 export function addHumanMessage(taskId: string, role: AgentRole, message: string) {
