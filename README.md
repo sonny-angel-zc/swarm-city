@@ -93,7 +93,7 @@ SWARM_CODEX_AGENT_MAP='{"default":"agent-default","engineer":"agent-eng","qa":"a
 - `npm run validate:docs-registry`: verify docs registry metadata and markdown file paths in `src/core/planRegistry.ts`.
 - `npm run validate:next-router-roots`: ensure `app`/`pages` roots are not split between project root and `src` (prevents Next.js typegen path breakage).
 - `npm run test:e2e`: run Playwright suite.
-- `npm run test:smoke:preflight`: validate smoke prerequisites and server readiness (`SMOKE_PREFLIGHT_MODE=listen|check|skip`, default `listen`).
+- `npm run test:smoke:preflight`: enforce smoke preflight contract (tooling, Node version, clean git worktree, dependencies, config validity, and mode-based server readiness for `SMOKE_PREFLIGHT_MODE=listen|check|skip`).
 - `npm run test:smoke`: run smoke test only (local quick run) after preflight checks. Supports `SMOKE_HOST`/`SMOKE_PORT` (defaults: `127.0.0.1`/`3000`).
 - `npm run test:smoke:ci`: run smoke test with CI semantics (single worker, zero retries) after preflight checks. Supports `SMOKE_HOST`/`SMOKE_PORT` (defaults: `127.0.0.1`/`3000`).
 

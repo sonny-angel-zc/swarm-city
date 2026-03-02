@@ -36,7 +36,28 @@ Run just the smoke suite:
 npm run test:smoke
 ```
 
-Each smoke run now starts with `test:smoke:preflight`, which fails fast on missing tooling, dirty git worktrees, invalid `SMOKE_HOST`/`SMOKE_PORT`, missing dependencies, or server startup/readiness errors.
+Each smoke run starts with `test:smoke:preflight`.
+
+## Smoke preflight contract
+
+`npm run test:smoke:preflight` is a hard gate that must pass before smoke tests run.
+
+It checks:
+
+- Tooling in `PATH`: `node`, `npm`, `npx`, `git`.
+- Runtime: Node.js major version is `20+`.
+- Repo state: git worktree is clean (no modified, deleted, or untracked files).
+- Installed dependencies: `next` and `@playwright/test` exist in `node_modules`.
+- Smoke config:
+  - `SMOKE_HOST` is non-empty and has no whitespace.
+  - `SMOKE_PORT` is an integer in `1-65535` (default `3000` if unset).
+  - `SMOKE_PREFLIGHT_MODE` is one of `listen`, `check`, or `skip`.
+- Server readiness (mode-dependent):
+  - `listen` (default): if nothing responds at `SMOKE_HOST:SMOKE_PORT`, preflight starts `next dev` and requires readiness within 45s.
+  - `check`: preflight requires an already-running server at `SMOKE_HOST:SMOKE_PORT`.
+  - `skip`: preflight skips server/network readiness checks.
+
+If any check fails, preflight exits non-zero and `test:smoke` stops immediately.
 
 ## CI-equivalent run
 
@@ -77,9 +98,14 @@ SMOKE_PREFLIGHT_MODE=skip npm run test:smoke:preflight
   - Confirm Node.js 20+ and npm are installed.
   - Run `npm ci` and retry.
 - Preflight fails with `Dirty worktree detected`:
-  - Commit, stash, or discard local modified/deleted files.
-  - Clean untracked files you do not need.
-  - Re-run after `git status --short` shows no output.
+  - Inspect what is dirty: `git status --short`.
+  - Choose one:
+    - Keep changes: commit them.
+    - Temporarily park changes (including untracked): `git stash push -u -m "wip before smoke run"`.
+    - Discard tracked edits you do not need: `git restore .`
+    - Remove untracked files you do not need: `git clean -fd`
+  - Re-run only when `git status --short` is empty.
+  - If you need to keep unrelated local work while running smoke, use isolated workflow guidance: `docs/references/smoke-suite-isolation.md`.
 - Preflight fails on invalid `SMOKE_HOST`/`SMOKE_PORT`:
   - Use a host without spaces and a port in the `1-65535` range.
 - Port `3000` already in use:
