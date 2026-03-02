@@ -13,11 +13,14 @@ export type SSEEvent =
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
   | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
+  | { type: 'agent_status'; taskId: string; role: AgentRole; status: 'idle' | 'working' | 'needs_input' | 'done' | 'blocked'; currentTask?: string | null; progress?: number; output?: string }
+  | { type: 'agent_retry'; taskId: string; role: AgentRole; attempt: number; maxAttempts?: number; reason?: string; currentTask?: string; progress?: number }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
   | { type: 'agent_done'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_usage'; taskId: string; role: AgentRole; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; costUsd: number; model: string } }
   | { type: 'agent_error'; taskId: string; role: AgentRole; error: string }
+  | { type: 'task_failed'; taskId: string; error: string; output?: string; role?: AgentRole }
   | { type: 'task_complete'; taskId: string };
 
 export type SSEListener = (event: SSEEvent) => void;

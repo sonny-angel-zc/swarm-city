@@ -45,11 +45,14 @@ type SSEEvent =
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
   | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
+  | { type: 'agent_status'; taskId: string; role: AgentRole; status: AgentStatus; currentTask?: string | null; progress?: number; output?: string }
+  | { type: 'agent_retry'; taskId: string; role: AgentRole; attempt: number; maxAttempts?: number; reason?: string; currentTask?: string; progress?: number }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
   | { type: 'agent_done'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_usage'; taskId: string; role: AgentRole; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; costUsd: number; model: string } }
   | { type: 'agent_error'; taskId: string; role: AgentRole; error: string }
+  | { type: 'task_failed'; taskId: string; error: string; output?: string; role?: AgentRole }
   | { type: 'task_complete'; taskId: string };
 
 type SwarmStore = {
@@ -916,6 +919,46 @@ docsRegistry: getPlanRegistry(),
         break;
       }
 
+      case 'agent_status': {
+        const role = event.role;
+        const lastLine = event.output?.split('\n').filter(Boolean).pop()?.slice(0, 200);
+        agents[role] = {
+          ...agents[role],
+          status: event.status,
+          currentTask: event.currentTask !== undefined ? event.currentTask : agents[role].currentTask,
+          progress: typeof event.progress === 'number'
+            ? Math.max(0, Math.min(1, event.progress))
+            : agents[role].progress,
+          log: lastLine
+            ? [...agents[role].log, { timestamp: now, message: lastLine, type: 'output' }].slice(-20) as LogEntry[]
+            : agents[role].log,
+        };
+        set({ agents });
+        break;
+      }
+
+      case 'agent_retry': {
+        const role = event.role;
+        const retryLabel = event.maxAttempts
+          ? `Retry ${event.attempt}/${event.maxAttempts}`
+          : `Retry ${event.attempt}`;
+        const reason = event.reason ? `: ${event.reason}` : '';
+        agents[role] = {
+          ...agents[role],
+          status: 'working',
+          currentTask: event.currentTask ?? `${retryLabel}${reason}`,
+          progress: typeof event.progress === 'number'
+            ? Math.max(0, Math.min(1, event.progress))
+            : Math.max(0, Math.min(0.95, agents[role].progress * 0.5)),
+          log: [
+            ...agents[role].log,
+            { timestamp: now, message: `${retryLabel}${reason}`, type: 'info' },
+          ].slice(-20) as LogEntry[],
+        };
+        set({ agents });
+        break;
+      }
+
       case 'agent_output': {
         const role = event.role;
         // Append to agent log (truncate to last line for readability)
@@ -1159,6 +1202,46 @@ docsRegistry: getPlanRegistry(),
           eventSource: null,
           currentTaskId: null,
           backlog: updatedBacklog,
+          decompositionStatus: createInitialDecompositionStatus(),
+        });
+        break;
+      }
+
+      case 'task_failed': {
+        if (event.role) {
+          agents[event.role] = {
+            ...agents[event.role],
+            status: 'blocked',
+            log: [
+              ...agents[event.role].log,
+              { timestamp: now, message: `❌ ${event.error}`, type: 'error' },
+            ].slice(-20) as LogEntry[],
+          };
+          if (event.output) {
+            const outputLine = event.output.split('\n').filter(Boolean).pop()?.slice(0, 200);
+            if (outputLine) {
+              agents[event.role].log = [
+                ...agents[event.role].log,
+                { timestamp: now, message: outputLine, type: 'output' },
+              ].slice(-20) as LogEntry[];
+            }
+          }
+        }
+
+        const task = state.currentTask;
+        const nextTask = task ? { ...task, status: 'failed' as const } : null;
+
+        const es = state.eventSource;
+        if (es) es.close();
+        try { localStorage.removeItem('swarm:lastTaskId'); } catch {}
+
+        log.push({ timestamp: now, message: `Task failed: ${event.error}`, type: 'error' });
+        set({
+          currentTask: nextTask,
+          agents,
+          activityLog: log.slice(-100),
+          eventSource: null,
+          currentTaskId: null,
           decompositionStatus: createInitialDecompositionStatus(),
         });
         break;
@@ -1491,3 +1574,7 @@ docsRegistry: getPlanRegistry(),
     });
   },
 }));
+
+if (typeof window !== 'undefined' && process.env.NODE_ENV !== 'production') {
+  (window as Window & { __swarmStore?: typeof useSwarmStore }).__swarmStore = useSwarmStore;
+}

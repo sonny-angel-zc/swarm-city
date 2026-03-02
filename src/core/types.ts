@@ -52,7 +52,7 @@ export type Task = {
   id: string;
   title: string;
   subtasks: SubTask[];
-  status: 'decomposing' | 'in_progress' | 'review' | 'done';
+  status: 'decomposing' | 'in_progress' | 'review' | 'done' | 'failed';
   createdAt: number;
 };
 
