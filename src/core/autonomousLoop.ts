@@ -1,6 +1,7 @@
 import path from 'path';
 import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType } from './linearServer';
 import { detectRetryKind, executeAutonomousTaskWithCodex, runCodexExec } from './orchestrator';
+import { isLocalServerHealthy, pruneOrphanedWorktrees, recoverStuckStartedIssues, requestDevServerRestart } from './selfHealing';
 
 type AutonomousEventType = 'info' | 'error' | 'warning';
 
@@ -38,10 +39,12 @@ export type AutonomousState = {
 
 type Runtime = {
   started: boolean;
+  bootRecoveryDone: boolean;
   timer: NodeJS.Timeout | null;
   state: AutonomousState;
   eventId: number;
   lock: boolean;
+  consecutiveErrors: number;
 };
 
 const DEFAULT_INTERVAL_MS = Number(process.env.SWARM_AUTONOMOUS_INTERVAL_MS ?? '60000');
@@ -103,10 +106,12 @@ function createInitialState(): AutonomousState {
 if (!globalRuntime.__swarmAutonomousRuntime) {
   globalRuntime.__swarmAutonomousRuntime = {
     started: false,
+    bootRecoveryDone: false,
     timer: null,
     state: createInitialState(),
     eventId: 0,
     lock: false,
+    consecutiveErrors: 0,
   };
 }
 
@@ -224,6 +229,16 @@ async function tickLoop() {
       addEvent(`Backlog seed complete (${seed.created} created, ${seed.skipped} already existed).`);
     }
 
+    const serverHealthy = await isLocalServerHealthy();
+    if (!serverHealthy) {
+      addEvent('Local health check failed before task start. Requesting dev server restart.', 'warning');
+      await requestDevServerRestart('autonomous-loop-pre-task-health-failed');
+      rt.state.paused = true;
+      rt.state.cooldownUntil = Date.now() + 2 * 60_000;
+      rt.state.pauseReason = 'Waiting for supervised dev server restart.';
+      return;
+    }
+
     const issue = await getTopTodoIssue(LINEAR_TEAM_ID);
     if (!issue) {
       rt.state.currentTask = null;
@@ -302,11 +317,49 @@ async function tickLoop() {
     if (generatedCount > 0) {
       addEvent(`Generated ${generatedCount} follow-up improvement task(s).`);
     }
-  } catch (err) {
-    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
   } finally {
     rt.state.running = false;
     rt.lock = false;
+  }
+}
+
+async function runTickSafely() {
+  const rt = runtime();
+  try {
+    await tickLoop();
+    rt.consecutiveErrors = 0;
+  } catch (err) {
+    rt.consecutiveErrors += 1;
+    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
+    if (rt.consecutiveErrors >= 3) {
+      rt.state.paused = true;
+      rt.state.cooldownUntil = Date.now() + (2 * 60_000);
+      rt.state.pauseReason = 'Paused after 3 consecutive loop errors.';
+      addEvent('Paused autonomous loop for 120s after 3 consecutive errors.', 'warning');
+      rt.consecutiveErrors = 0;
+    }
+  }
+}
+
+async function runBootRecovery() {
+  const rt = runtime();
+  if (rt.bootRecoveryDone) return;
+  rt.bootRecoveryDone = true;
+
+  try {
+    const [stuck, cleanup] = await Promise.all([
+      recoverStuckStartedIssues(LINEAR_TEAM_ID),
+      pruneOrphanedWorktrees(LINEAR_TEAM_ID),
+    ]);
+
+    if (stuck.reset > 0 || stuck.skipped > 0) {
+      addEvent(`Recovered stuck tasks: ${stuck.reset} reset, ${stuck.skipped} skipped.`, stuck.skipped > 0 ? 'warning' : 'info');
+    }
+    if (cleanup.worktreesRemoved > 0 || cleanup.branchesRemoved > 0) {
+      addEvent(`Worktree cleanup: removed ${cleanup.worktreesRemoved} worktree(s), ${cleanup.branchesRemoved} branch(es).`);
+    }
+  } catch (err) {
+    addEvent(`Boot recovery warning: ${String(err)}`, 'warning');
   }
 }
 
@@ -315,10 +368,11 @@ export function startAutonomousLoop() {
   if (rt.started) return;
   rt.started = true;
   addEvent('Autonomous loop booted.');
+  void runBootRecovery();
 
   if (!rt.state.enabled) return;
-  void tickLoop();
-  rt.timer = setInterval(() => { void tickLoop(); }, rt.state.intervalMs);
+  void runTickSafely();
+  rt.timer = setInterval(() => { void runTickSafely(); }, rt.state.intervalMs);
 }
 
 function restartTimer() {
@@ -328,7 +382,7 @@ function restartTimer() {
     rt.timer = null;
   }
   if (!rt.state.enabled) return;
-  rt.timer = setInterval(() => { void tickLoop(); }, rt.state.intervalMs);
+  rt.timer = setInterval(() => { void runTickSafely(); }, rt.state.intervalMs);
 }
 
 export function setAutonomousEnabled(enabled: boolean) {
@@ -340,7 +394,7 @@ export function setAutonomousEnabled(enabled: boolean) {
     rt.state.cooldownUntil = null;
     rt.state.pauseReason = null;
     restartTimer();
-    void tickLoop();
+    void runTickSafely();
   } else {
     addEvent('Autonomous mode paused by user.', 'warning');
     if (rt.timer) {
