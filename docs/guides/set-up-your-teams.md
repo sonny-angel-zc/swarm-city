@@ -1,25 +1,25 @@
 # Set up your teams
 
-This workspace is a container for your organization's work. Use team structure and member roles to make ownership and workflows clear.
+This workspace is a container for your organization's work.
 
 ## Configure your workspace
 
 - [Learn more about Workspaces](https://linear.app/docs/workspaces)
-- Define your workspace settings and default workflows.
+  How to configure settings and workflows
 
 ## Organize around teams
 
 Teams are how you organize people and work in Linear.
 
 - [Learn about Teams](https://linear.app/docs/teams)
-- Structure teams and configure team-level workflows.
+  How to structure teams and configure workflows
 
 ## Add members and roles
 
-Teams are made of members with defined roles: Admin, Member, and Guest.
+Teams are made of members with defined roles (Admin, Member, Guest).
 
 - [Learn more about Members](https://linear.app/docs/invite-members)
-- Invite your team and assign roles based on responsibility.
+  Add your team and assign roles
 
 ## Invite your team now
 

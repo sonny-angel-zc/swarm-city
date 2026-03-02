@@ -98,7 +98,7 @@ const DOCS_SEED: PlanDocument[] = [
     summary: 'Team setup guide covering workspace configuration, team structure, and member roles.',
     tags: ['linear', 'teams', 'workspace', 'members', 'roles'],
     content: [
-      'Workspaces contain your organization work and team-level processes.',
+      "This workspace is a container for your organization's work.",
       '- Configure workspace settings and default workflows.',
       '- Use teams to organize ownership and execution.',
       '- Invite members and assign Admin, Member, or Guest roles.',
