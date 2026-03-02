@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
+import { parsePreflightStderr } from '../scripts/lib/preflight-stderr.mjs';
+
 const SCRIPT_PATH = resolve(process.cwd(), 'scripts/smoke-preflight.mjs');
 
 function run(command, args, cwd) {
@@ -73,15 +75,22 @@ test('passes preflight in clean repository', () => {
 test('fails preflight when required tooling is unavailable', () => {
   const repo = createRepo({ includeDependencies: true, dirty: false });
   const result = runPreflight(repo, { PATH: '' });
+  const parsed = parsePreflightStderr(result.stderr);
 
   assert.equal(result.status, 1, result.stdout);
-  assert.match(result.stderr, /Required tool "npm" is unavailable\./);
+  assert.deepEqual(parsed.errors, ['Required tool "npm" is unavailable.']);
+  assert.match(
+    parsed.hints[0] ?? '',
+    /Install npm and ensure it is on PATH, then retry npm run test:smoke\./,
+  );
 });
 
 test('fails preflight when worktree is dirty', () => {
   const repo = createRepo({ includeDependencies: false, dirty: true });
   const result = runPreflight(repo);
+  const parsed = parsePreflightStderr(result.stderr);
 
   assert.equal(result.status, 1, result.stdout);
-  assert.match(result.stderr, /Dirty worktree detected/);
+  assert.match(parsed.errors[0] ?? '', /Dirty worktree detected/);
+  assert.match(parsed.hints[0] ?? '', /Inspect with: git status --short/);
 });
