@@ -69,6 +69,63 @@ Restricted environment preflight-only example (no port binding attempt):
 SMOKE_PREFLIGHT_MODE=skip npm run test:smoke:preflight
 ```
 
+## Preflight failure contract
+
+`scripts/smoke-preflight.mjs` emits a stable machine-readable error contract on `stderr` for every failure.
+
+### Line format
+
+- `FAIL_CODE` line:
+
+```text
+[smoke:preflight] FAIL_CODE=<CODE>
+```
+
+- `FAIL_FIELD` line:
+
+```text
+[smoke:preflight] FAIL_FIELD <KEY>=<JSON_VALUE>
+```
+
+`<JSON_VALUE>` is JSON-encoded (string, number, array). Consumers should parse the JSON payload after `=`.
+
+### Ordering guarantees
+
+For every failure, output order is stable:
+
+1. Exactly one `FAIL_CODE` line.
+2. Zero or more `FAIL_FIELD` lines.
+3. Human-readable `ERROR` line.
+4. Optional human-readable `HINT` line.
+
+Within `FAIL_FIELD` lines:
+
+1. Required fields are emitted first, in the documented order for that `FAIL_CODE`.
+2. Optional fields are emitted after required fields, in the documented order, only when present.
+
+### `FAIL_CODE` reference
+
+| FAIL_CODE | Required `FAIL_FIELD` keys (ordered) | Optional `FAIL_FIELD` keys (ordered) |
+| --- | --- | --- |
+| `INVALID_SMOKE_HOST_EMPTY` | `VAR_NAME` | None |
+| `INVALID_SMOKE_HOST_WHITESPACE` | `VAR_NAME`, `HOST_VALUE` | None |
+| `INVALID_SMOKE_PORT` | `VAR_NAME`, `RECEIVED`, `MIN_PORT`, `MAX_PORT`, `DEFAULT_PORT` | None |
+| `INVALID_SMOKE_PREFLIGHT_MODE` | `VAR_NAME`, `RECEIVED`, `ALLOWED_MODES` | None |
+| `UNSUPPORTED_NODE_VERSION` | `DETECTED_VERSION`, `MIN_NODE_MAJOR` | None |
+| `MISSING_TOOL` | `TOOL` | `CHECK_ARGS` |
+| `MISSING_DEPENDENCY` | `DEPENDENCY`, `EXPECTED_PATH` | None |
+| `GIT_STATUS_UNAVAILABLE` | `COMMAND` | None |
+| `DIRTY_WORKTREE` | `MODIFIED`, `DELETED`, `UNTRACKED`, `OTHER`, `TOTAL_CHANGES`, `PREVIEW_COUNT` | `TRUNCATED_REMAINING` |
+| `SERVER_START_TIMEOUT` | `MODE`, `BASE_URL`, `TIMEOUT_SECONDS` | None |
+| `SERVER_CHECK_UNAVAILABLE` | `MODE`, `BASE_URL` | None |
+| `UNEXPECTED_FAILURE` | `ERROR_MESSAGE` | `ERROR_NAME` |
+
+### `FAIL_FIELD` value formats
+
+- `VAR_NAME`, `TOOL`, `DEPENDENCY`, `EXPECTED_PATH`, `COMMAND`, `MODE`, `BASE_URL`, `HOST_VALUE`, `DETECTED_VERSION`, `ERROR_MESSAGE`, `ERROR_NAME`, `RECEIVED`: JSON string
+- `MIN_PORT`, `MAX_PORT`, `DEFAULT_PORT`, `MIN_NODE_MAJOR`, `MODIFIED`, `DELETED`, `UNTRACKED`, `OTHER`, `TOTAL_CHANGES`, `PREVIEW_COUNT`, `TRUNCATED_REMAINING`, `TIMEOUT_SECONDS`: JSON number
+- `ALLOWED_MODES`, `CHECK_ARGS`: JSON array of strings
+
 ## Troubleshooting
 
 - `Executable doesn't exist` or browser launch failures:
