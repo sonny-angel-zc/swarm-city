@@ -62,6 +62,58 @@ function runPreflight(cwd, extraEnv = {}) {
   });
 }
 
+function parsePreflightStderr(stderr) {
+  const prefix = '[smoke:preflight] ';
+  const lines = stderr.replace(/\r\n/g, '\n').split('\n');
+  const entries = [];
+  let active = null;
+
+  function flush() {
+    if (!active) return;
+    const text = [active.firstLine, ...active.continuation]
+      .join('\n')
+      .trimEnd();
+    entries.push({ level: active.level, text });
+    active = null;
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line) {
+      if (active) active.continuation.push('');
+      continue;
+    }
+
+    if (!line.startsWith(prefix)) {
+      if (active) {
+        active.continuation.push(line);
+      } else {
+        entries.push({ level: 'legacy', text: line });
+      }
+      continue;
+    }
+
+    const payload = line.slice(prefix.length);
+    if (payload.startsWith('ERROR: ')) {
+      flush();
+      active = { level: 'error', firstLine: payload.slice('ERROR: '.length), continuation: [] };
+      continue;
+    }
+
+    if (payload.startsWith('HINT: ')) {
+      flush();
+      active = { level: 'hint', firstLine: payload.slice('HINT: '.length), continuation: [] };
+      continue;
+    }
+
+    flush();
+    entries.push({ level: 'legacy', text: payload });
+  }
+
+  flush();
+  return entries;
+}
+
 test('passes preflight in clean repository', () => {
   const repo = createRepo({ includeDependencies: true, dirty: false });
   const result = runPreflight(repo);
@@ -84,4 +136,32 @@ test('fails preflight when worktree is dirty', () => {
 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /Dirty worktree detected/);
+});
+
+test('parses stderr in CI/automation style with deterministic error/hint ordering', () => {
+  const repo = createRepo({ includeDependencies: false, dirty: true });
+  const result = runPreflight(repo);
+
+  assert.equal(result.status, 1, result.stdout);
+  const parsed = parsePreflightStderr(result.stderr);
+  assert.deepEqual(
+    parsed.map(entry => entry.level),
+    ['error', 'hint'],
+    result.stderr,
+  );
+
+  assert.match(parsed[0].text, /^Dirty worktree detected \(/);
+  assert.match(parsed[1].text, /^Commit\/stash\/discard local changes/);
+  assert.match(parsed[1].text, /Inspect with: git status --short/);
+  assert.match(parsed[1].text, /\n\nCurrent changes:\n/);
+
+  const hintLines = parsed[1].text.split('\n');
+  const inspectIndex = hintLines.indexOf('Inspect with: git status --short');
+  const currentChangesIndex = hintLines.indexOf('Current changes:');
+  assert.ok(inspectIndex >= 0 && currentChangesIndex > inspectIndex, parsed[1].text);
+
+  const backwardsCompatible = parsed.map(entry => entry.text);
+  assert.equal(backwardsCompatible.length, 2);
+  assert.equal(backwardsCompatible[0], parsed[0].text);
+  assert.equal(backwardsCompatible[1], parsed[1].text);
 });
