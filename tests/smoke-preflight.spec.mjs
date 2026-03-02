@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { parseFailFields } from '../scripts/lib/preflight-fail-fields.mjs';
 
 const SCRIPT_PATH = resolve(process.cwd(), 'scripts/smoke-preflight.mjs');
 
@@ -73,15 +74,22 @@ test('passes preflight in clean repository', () => {
 test('fails preflight when required tooling is unavailable', () => {
   const repo = createRepo({ includeDependencies: true, dirty: false });
   const result = runPreflight(repo, { PATH: '' });
+  const parsed = parseFailFields(result.stderr);
 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /Required tool "npm" is unavailable\./);
+  assert.equal(parsed.code, 'REQUIRED_TOOL_UNAVAILABLE');
+  assert.equal(parsed.fields.command, 'npm');
 });
 
 test('fails preflight when worktree is dirty', () => {
   const repo = createRepo({ includeDependencies: false, dirty: true });
   const result = runPreflight(repo);
+  const parsed = parseFailFields(result.stderr);
 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /Dirty worktree detected/);
+  assert.equal(parsed.code, 'DIRTY_WORKTREE');
+  assert.equal(parsed.fields.untracked, 1);
+  assert.equal(parsed.fields.lines, 1);
 });

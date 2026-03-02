@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { formatFailFieldLines } from './lib/preflight-fail-fields.mjs';
 
 const MIN_NODE_MAJOR = 20;
 const START_TIMEOUT_MS = 45_000;
@@ -15,10 +16,17 @@ function log(message) {
   console.log(`[smoke:preflight] ${message}`);
 }
 
-function fail(message, hint) {
+function fail(message, hint, meta = {}) {
+  const { code, fields = {} } = meta;
   console.error(`[smoke:preflight] ERROR: ${message}`);
   if (hint) {
     console.error(`[smoke:preflight] HINT: ${hint}`);
+  }
+  if (code) {
+    const lines = formatFailFieldLines({ prefix: '[smoke:preflight]', code, fields });
+    for (const line of lines) {
+      console.error(line);
+    }
   }
   process.exit(1);
 }
@@ -33,6 +41,7 @@ function parseSmokeConfig() {
     fail(
       'SMOKE_HOST is empty.',
       'Set SMOKE_HOST to a valid hostname or IP, for example: SMOKE_HOST=127.0.0.1',
+      { code: 'INVALID_SMOKE_HOST', fields: { host } },
     );
   }
 
@@ -40,6 +49,7 @@ function parseSmokeConfig() {
     fail(
       `SMOKE_HOST has whitespace: "${host}".`,
       'Use a plain hostname or IP with no spaces, for example: SMOKE_HOST=0.0.0.0',
+      { code: 'INVALID_SMOKE_HOST', fields: { host } },
     );
   }
 
@@ -50,6 +60,7 @@ function parseSmokeConfig() {
     fail(
       `SMOKE_PORT must be an integer from 1-65535, received: "${portRaw}".`,
       `Unset SMOKE_PORT to use ${fallbackPort}, or provide a valid port like SMOKE_PORT=4173.`,
+      { code: 'INVALID_SMOKE_PORT', fields: { portRaw } },
     );
   }
 
@@ -57,6 +68,7 @@ function parseSmokeConfig() {
     fail(
       `SMOKE_PREFLIGHT_MODE must be one of: ${Array.from(PREFLIGHT_MODES).join(', ')}. Received: "${preflightMode}".`,
       'Use listen (default), check (existing server only), or skip (non-listening mode).',
+      { code: 'INVALID_SMOKE_PREFLIGHT_MODE', fields: { preflightMode } },
     );
   }
 
@@ -69,6 +81,7 @@ function ensureNodeVersion() {
     fail(
       `Node.js ${process.versions.node} detected, but smoke tests require Node.js ${MIN_NODE_MAJOR}+.`,
       `Use Node.js ${MIN_NODE_MAJOR}+ (for example via nvm), then reinstall dependencies with npm ci.`,
+      { code: 'NODE_VERSION_UNSUPPORTED', fields: { nodeVersion: process.versions.node, minNodeMajor: MIN_NODE_MAJOR } },
     );
   }
 }
@@ -79,6 +92,7 @@ function ensureCommand(command, args = ['--version']) {
     fail(
       `Required tool "${command}" is unavailable.`,
       `Install ${command} and ensure it is on PATH, then retry npm run test:smoke.`,
+      { code: 'REQUIRED_TOOL_UNAVAILABLE', fields: { command } },
     );
   }
 }
@@ -88,6 +102,7 @@ function ensureDependencyInstalled(packagePath, label) {
     fail(
       `Missing dependency: ${label}.`,
       'Run npm ci (or npm install) before running smoke tests.',
+      { code: 'MISSING_DEPENDENCY', fields: { dependency: label, packagePath } },
     );
   }
 }
@@ -136,6 +151,7 @@ function ensureCleanWorktree() {
     fail(
       'Unable to inspect git worktree state before smoke run.',
       'Ensure git is installed and run smoke preflight from the repository root.',
+      { code: 'WORKTREE_INSPECTION_FAILED' },
     );
   }
 
@@ -163,6 +179,7 @@ function ensureCleanWorktree() {
   fail(
     `Dirty worktree detected (${summaryParts.join(', ')}). Smoke preflight requires a clean repository state.`,
     `Commit/stash/discard local changes (including untracked files), then retry.\nInspect with: git status --short\n\nCurrent changes:\n${preview}${remainder}`,
+    { code: 'DIRTY_WORKTREE', fields: { ...summary, lines: lines.length } },
   );
 }
 
@@ -253,6 +270,7 @@ async function assertServerStartReadiness(host, port, baseUrl) {
     fail(
       `Unable to start and reach server at ${baseUrl} within ${Math.floor(START_TIMEOUT_MS / 1000)}s.`,
       `${tail || 'No startup logs captured.'}\nFix host/port conflicts or Next startup errors, then retry.`,
+      { code: 'SERVER_START_TIMEOUT', fields: { baseUrl, timeoutMs: START_TIMEOUT_MS } },
     );
   }
 
@@ -272,6 +290,7 @@ async function assertServerReadiness({ host, port, baseUrl, preflightMode }) {
       fail(
         `SMOKE_PREFLIGHT_MODE=check requires an existing server at ${baseUrl}, but none responded.`,
         'Start a server manually, or switch to SMOKE_PREFLIGHT_MODE=listen (default) where preflight starts Next.js automatically.',
+        { code: 'SERVER_NOT_READY', fields: { baseUrl, preflightMode } },
       );
     }
 
@@ -301,5 +320,5 @@ async function main() {
 }
 
 main().catch(error => {
-  fail(`Unexpected preflight failure: ${error?.message ?? String(error)}`);
+  fail(`Unexpected preflight failure: ${error?.message ?? String(error)}`, undefined, { code: 'UNEXPECTED_PREFLIGHT_FAILURE' });
 });
