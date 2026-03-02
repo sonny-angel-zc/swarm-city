@@ -86,7 +86,7 @@ export type Particle = {
   maxLife: number;
   color: string;
   size: number;
-  type?: 'default' | 'coin';
+  type?: 'default' | 'coin' | 'water';
 };
 
 // ─── Economy Types ────────────────────────────────────────────────────────────
@@ -186,6 +186,8 @@ export type BacklogItem = {
   statusLabel?: string;
   labels?: string[];
   updatedAt: number;
+  swarmTaskId?: string;    // links to an active swarm orchestrator task
+  isSwarmTarget?: boolean; // true when swarm is currently running on this item
 };
 
 export type LinearSyncState = {
@@ -193,6 +195,40 @@ export type LinearSyncState = {
   syncing: boolean;
   lastSyncAt: number | null;
   error: string | null;
+};
+
+export type AutonomousEventType = 'info' | 'warning' | 'error';
+
+export type AutonomousEvent = {
+  id: number;
+  timestamp: number;
+  type: AutonomousEventType;
+  message: string;
+};
+
+export type AutonomousCompletedTask = {
+  issueId: string;
+  identifier: string;
+  title: string;
+  completedAt: number;
+};
+
+export type AutonomousStatus = {
+  enabled: boolean;
+  running: boolean;
+  paused: boolean;
+  pauseReason: string | null;
+  cooldownUntil: number | null;
+  intervalMs: number;
+  currentTask: {
+    issueId: string;
+    identifier: string;
+    title: string;
+  } | null;
+  completedTasks: AutonomousCompletedTask[];
+  events: AutonomousEvent[];
+  seeded: boolean;
+  lastTickAt: number | null;
 };
 
 export type Notification = {

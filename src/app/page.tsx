@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import CityCanvas from '@/components/CityCanvas';
 import TopBar from '@/components/TopBar';
 import Sidebar from '@/components/Sidebar';
@@ -11,9 +11,29 @@ import Treasury from '@/components/Treasury';
 import BudgetPanel from '@/components/BudgetPanel';
 import OverlayToggle from '@/components/OverlayToggle';
 import BacklogPanel from '@/components/BacklogPanel';
+import { useSwarmStore } from '@/core/store';
 
 export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const resumeTask = useSwarmStore(s => s.resumeTask);
+  const fetchLimits = useSwarmStore(s => s.fetchLimits);
+  const syncBacklog = useSwarmStore(s => s.syncBacklog);
+  const fetchAutonomousStatus = useSwarmStore(s => s.fetchAutonomousStatus);
+
+  useEffect(() => {
+    // Fetch runtime budget limits and Linear backlog on mount
+    fetchLimits();
+    syncBacklog();
+    fetchAutonomousStatus();
+    const timer = window.setInterval(() => {
+      fetchAutonomousStatus();
+    }, 4000);
+    try {
+      const lastTaskId = localStorage.getItem('swarm:lastTaskId');
+      if (lastTaskId) resumeTask(lastTaskId);
+    } catch {}
+    return () => window.clearInterval(timer);
+  }, [resumeTask, fetchLimits, syncBacklog, fetchAutonomousStatus]);
 
   return (
     <div className="h-[100dvh] flex flex-col">

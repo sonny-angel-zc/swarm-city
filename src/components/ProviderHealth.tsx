@@ -15,7 +15,6 @@ const statusClasses: Record<ProviderStatus, string> = {
 const providerLabel: Record<ProviderId, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
-  google: 'Google',
 };
 
 export default function ProviderHealth() {

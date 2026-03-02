@@ -20,6 +20,8 @@ const STATUS_ICONS: Record<string, string> = {
 
 function IssueCard({ item }: { item: BacklogItem }) {
   const updateIssueStatus = useSwarmStore(s => s.updateLinearIssueStatus);
+  const deploySwarm = useSwarmStore(s => s.deploySwarm);
+  const [deploying, setDeploying] = useState(false);
 
   const handleStatusCycle = async () => {
     if (!item.linearId) return;
@@ -33,6 +35,12 @@ function IssueCard({ item }: { item: BacklogItem }) {
     await updateIssueStatus(item.linearId, nextType);
   };
 
+  const handleDeploy = async () => {
+    setDeploying(true);
+    await deploySwarm(item.id);
+    setDeploying(false);
+  };
+
   return (
     <div
       style={{
@@ -42,6 +50,8 @@ function IssueCard({ item }: { item: BacklogItem }) {
         padding: '6px 10px',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
         fontSize: 13,
+        background: item.isSwarmTarget ? 'rgba(99,102,241,0.08)' : undefined,
+        borderLeft: item.isSwarmTarget ? '2px solid #818cf8' : '2px solid transparent',
       }}
     >
       <button
@@ -99,6 +109,52 @@ function IssueCard({ item }: { item: BacklogItem }) {
 
       {item.ownerName && (
         <span style={{ fontSize: 10, color: '#9ca3af' }}>{item.ownerName}</span>
+      )}
+
+      {item.isSwarmTarget ? (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            color: '#818cf8',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#818cf8',
+              display: 'inline-block',
+              animation: 'swarmPulse 1s ease-in-out infinite',
+            }}
+          />
+          SWARMING
+        </span>
+      ) : item.status !== 'done' && (
+        <button
+          onClick={handleDeploy}
+          disabled={deploying}
+          title="Deploy swarm on this issue"
+          style={{
+            background: 'rgba(99,102,241,0.15)',
+            color: '#818cf8',
+            border: '1px solid rgba(99,102,241,0.3)',
+            borderRadius: 4,
+            padding: '2px 7px',
+            fontSize: 10,
+            cursor: deploying ? 'default' : 'pointer',
+            opacity: deploying ? 0.5 : 1,
+            whiteSpace: 'nowrap',
+            fontWeight: 600,
+          }}
+        >
+          {deploying ? '...' : '⚡ Deploy'}
+        </button>
       )}
     </div>
   );
@@ -200,6 +256,7 @@ function CreateIssueForm({ onClose }: { onClose: () => void }) {
 export default function BacklogPanel() {
   const backlog = useSwarmStore(s => s.backlog);
   const linear = useSwarmStore(s => s.linear);
+  const autonomous = useSwarmStore(s => s.autonomous);
   const syncLinear = useSwarmStore(s => s.syncLinear);
   const [showCreate, setShowCreate] = useState(false);
 
@@ -289,6 +346,22 @@ export default function BacklogPanel() {
           {linear.error}
         </div>
       )}
+
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+        <div style={{ fontSize: 10, color: '#9ca3af' }}>
+          Autonomous: <span style={{ color: autonomous.enabled ? '#34d399' : '#9ca3af' }}>{autonomous.enabled ? 'ON' : 'OFF'}</span>
+          {autonomous.currentTask ? ` • Working: ${autonomous.currentTask.identifier}` : ' • Idle'}
+        </div>
+        {autonomous.completedTasks.length > 0 && (
+          <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {autonomous.completedTasks.slice(0, 3).map((task) => (
+              <div key={task.issueId} style={{ fontSize: 10, color: '#6ee7b7', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                ✓ {task.identifier} {task.title}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Issues list */}
       <div style={{ overflowY: 'auto', flex: 1 }}>

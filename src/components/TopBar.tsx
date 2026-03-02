@@ -8,6 +8,10 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
   const [input, setInput] = useState('');
   const submitTask = useSwarmStore(s => s.submitTask);
   const currentTask = useSwarmStore(s => s.currentTask);
+  const autonomous = useSwarmStore(s => s.autonomous);
+  const setAutonomousEnabled = useSwarmStore(s => s.setAutonomousEnabled);
+  const modelPreset = useSwarmStore(s => s.modelPreset);
+  const setModelPreset = useSwarmStore(s => s.setModelPreset);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,10 +39,33 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
             type="submit"
             className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold px-3 py-1.5 rounded-md transition-colors"
           >
-            Deploy →
+            Create Task →
           </button>
         </div>
       </form>
+      <label className="hidden md:flex items-center gap-2 text-xs text-white/60">
+        <span>Preset</span>
+        <select
+          value={modelPreset}
+          onChange={(e) => setModelPreset(e.target.value as 'claude-first' | 'codex-first')}
+          className="bg-[#161b22] border border-[#30363d] rounded-md px-2 py-1 text-white/90 focus:outline-none focus:border-[#58a6ff]"
+        >
+          <option value="codex-first">Codex-first</option>
+          <option value="claude-first">Claude-first</option>
+        </select>
+      </label>
+      <button
+        onClick={() => { void setAutonomousEnabled(!autonomous.enabled); }}
+        className={`inline-flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] border transition-colors ${
+          autonomous.enabled
+            ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+            : 'bg-white/5 text-white/60 border-white/15'
+        }`}
+        title="Toggle autonomous execution loop"
+      >
+        <span>Autonomous</span>
+        <span>{autonomous.enabled ? 'ON' : 'OFF'}</span>
+      </button>
       <button
         onClick={onToggleSidebar}
         className="md:hidden p-2 rounded-lg hover:bg-[#161b22] text-white/60 transition-colors"
@@ -58,6 +85,14 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
             {currentTask.status === 'done' ? 'Complete' :
              currentTask.status === 'decomposing' ? 'Decomposing...' :
              `${currentTask.subtasks.filter(s => s.status === 'done').length}/${currentTask.subtasks.length} tasks`}
+          </span>
+        </div>
+      )}
+      {autonomous.currentTask && (
+        <div className="hidden lg:flex items-center gap-2 text-xs text-white/55 max-w-72 truncate">
+          <span className={`inline-block w-2 h-2 rounded-full ${autonomous.running ? 'bg-emerald-400 animate-pulse' : 'bg-sky-400'}`} />
+          <span className="truncate">
+            Auto: {autonomous.currentTask.identifier} {autonomous.currentTask.title}
           </span>
         </div>
       )}

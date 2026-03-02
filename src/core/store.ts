@@ -4,11 +4,13 @@ import {
   LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
   TelemetryState, BacklogItem, LinearSyncState,
+  AutonomousStatus,
 } from './types';
 import {
+  ModelPreset,
   ModelCandidate,
+  MODEL_PRESET_CHAINS,
   ProviderHealth,
-  DEFAULT_MODEL_CHAIN,
   createInitialProviderHealth,
   pickFallbackModel,
   onProviderFailure,
@@ -44,6 +46,7 @@ type SSEEvent =
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
   | { type: 'agent_done'; taskId: string; role: AgentRole; output: string }
+  | { type: 'agent_usage'; taskId: string; role: AgentRole; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; costUsd: number; model: string } }
   | { type: 'agent_error'; taskId: string; role: AgentRole; error: string }
   | { type: 'task_complete'; taskId: string };
 
@@ -76,6 +79,7 @@ type SwarmStore = {
   budgetPanelOpen: boolean;
 // Ops layer
   rateLimiter: RateLimitManager;
+  modelPreset: ModelPreset;
   modelCandidates: ModelCandidate[];
   providerHealth: Record<ProviderId, ProviderHealth>;
   activeModel: ModelCandidate | null;
@@ -83,6 +87,7 @@ type SwarmStore = {
   telemetry: TelemetryState;
   backlog: BacklogItem[];
   linear: LinearSyncState;
+  autonomous: AutonomousStatus & { lastEventId: number };
 // Docs
   docsRegistry: PlanDocument[];
   docsFilter: 'all' | DocCategory;
@@ -91,9 +96,13 @@ type SwarmStore = {
   documentMemory: DocumentMemoryItem[];
 
   // Actions
+  spawnParticles: (particles: Particle[]) => void;
   selectAgent: (role: AgentRole | null) => void;
   setOverlayMode: (mode: OverlayMode) => void;
+  setModelPreset: (preset: ModelPreset) => void;
   submitTask: (title: string) => void;
+  deploySwarm: (backlogItemId: string) => Promise<void>;
+  resumeTask: (taskId: string) => Promise<void>;
   tick: (dt: number) => void;
   sendMessage: (agentRole: AgentRole, message: string) => void;
   setCameraPos: (x: number, y: number) => void;
@@ -103,11 +112,14 @@ type SwarmStore = {
   spendTokens: (role: AgentRole, amount: number, type: TransactionType) => void;
   setAgentBudget: (role: AgentRole, budget: number) => void;
   setBudgetPanelOpen: (open: boolean) => void;
+fetchLimits: () => Promise<void>;
 syncBacklog: () => Promise<void>;
   syncLinear: () => Promise<void>;
   createLinearIssue: (title: string, description?: string, priority?: number) => Promise<void>;
   updateLinearIssueStatus: (issueId: string, newStatusType: string) => Promise<void>;
   setBacklogItemStatus: (id: string, status: BacklogItem['status']) => void;
+  fetchAutonomousStatus: () => Promise<void>;
+  setAutonomousEnabled: (enabled: boolean) => Promise<void>;
 setDocsFilter: (filter: 'all' | DocCategory) => void;
   setDocsQuery: (query: string) => void;
   selectDocument: (docId: string | null) => void;
@@ -186,8 +198,9 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   economy: createInitialEconomy(),
   budgetPanelOpen: false,
 rateLimiter: new RateLimitManager(DEFAULT_RATE_LIMITS),
-  modelCandidates: DEFAULT_MODEL_CHAIN,
-  providerHealth: createInitialProviderHealth(['anthropic', 'openai', 'google']),
+  modelPreset: 'codex-first',
+  modelCandidates: MODEL_PRESET_CHAINS['codex-first'],
+  providerHealth: createInitialProviderHealth(['anthropic', 'openai']),
   activeModel: null,
   lastFallbackReason: null,
   telemetry: createInitialTelemetryState(),
@@ -198,14 +211,35 @@ rateLimiter: new RateLimitManager(DEFAULT_RATE_LIMITS),
     lastSyncAt: null,
     error: null,
   },
+  autonomous: {
+    enabled: false,
+    running: false,
+    paused: false,
+    pauseReason: null,
+    cooldownUntil: null,
+    intervalMs: 60000,
+    currentTask: null,
+    completedTasks: [],
+    events: [],
+    seeded: false,
+    lastTickAt: null,
+    lastEventId: 0,
+  },
 docsRegistry: getPlanRegistry(),
   docsFilter: 'all',
   docsQuery: '',
   selectedDocId: getPlanRegistry()[0]?.id ?? null,
   documentMemory: [],
 
+  spawnParticles: (particles) => set(state => ({ particles: [...state.particles, ...particles] })),
   selectAgent: (role) => set({ selectedAgent: role }),
   setOverlayMode: (mode) => set({ overlayMode: mode }),
+  setModelPreset: (preset) => set({
+    modelPreset: preset,
+    modelCandidates: MODEL_PRESET_CHAINS[preset],
+    activeModel: null,
+    lastFallbackReason: `Model preset: ${preset === 'claude-first' ? 'Claude-first' : 'Codex-first'}.`,
+  }),
   setBudgetPanelOpen: (open) => set({ budgetPanelOpen: open }),
   setDocsFilter: (filter) => set({ docsFilter: filter }),
   setDocsQuery: (query) => set({ docsQuery: query }),
@@ -333,29 +367,77 @@ docsRegistry: getPlanRegistry(),
   },
 
   submitTask: async (title: string) => {
+    // Linear-first: create an urgent (P1) Linear issue and show it in the backlog.
+    // Orchestration is triggered separately via deploySwarm().
+    try {
+      await get().createLinearIssue(title, undefined, 1);
+      set(state => ({
+        activityLog: [
+          ...state.activityLog,
+          { timestamp: Date.now(), message: `Task filed: "${title}" (P1 urgent)`, type: 'info' } as LogEntry,
+        ].slice(-100),
+      }));
+    } catch (err) {
+      console.error('[submitTask] Failed to create Linear issue:', err);
+      set(state => ({
+        activityLog: [
+          ...state.activityLog,
+          { timestamp: Date.now(), message: `Failed to create task: ${err}`, type: 'error' } as LogEntry,
+        ].slice(-100),
+      }));
+    }
+  },
+
+  deploySwarm: async (backlogItemId: string) => {
+    const state = get();
+    const backlogItem = state.backlog.find(item => item.id === backlogItemId);
+    if (!backlogItem) return;
+
     // Close any existing SSE connection
-    const prev = get().eventSource;
+    const prev = state.eventSource;
     if (prev) prev.close();
 
-    // Reset run-specific state
+    // Reset run-specific agent/economy state, but preserve the fetched budget limit
+    const currentBudget = get().economy.totalBudget;
+    const freshEconomy = createInitialEconomy();
+    freshEconomy.totalBudget = currentBudget;
+    // Also preserve per-agent budgets proportionally
+    const perAgent = Math.floor(currentBudget / 7);
+    for (const role of Object.keys(freshEconomy.agentBudgets) as AgentRole[]) {
+      freshEconomy.agentBudgets[role].tokenBudget = perAgent;
+    }
     set({
       agents: createAgents(),
-      economy: createInitialEconomy(),
+      economy: freshEconomy,
       telemetry: createInitialTelemetryState(),
     });
     lastHistoryTime = 0;
 
+    // Mark this item as the swarm target, clear any previous target
+    set(s => ({
+      backlog: s.backlog.map(item =>
+        item.id === backlogItemId
+          ? { ...item, isSwarmTarget: true, updatedAt: Date.now() }
+          : { ...item, isSwarmTarget: false }
+      ),
+    }));
+
+    // Update Linear issue status to "started"
+    if (backlogItem.linearId) {
+      get().updateLinearIssueStatus(backlogItem.linearId, 'started');
+    }
+
     try {
-      const state = get();
-      const limiter = state.rateLimiter;
+      const currentState = get();
+      const limiter = currentState.rateLimiter;
       const tried = new Set<string>();
-      let providerHealth = recoverProviderHealth(state.providerHealth);
+      let providerHealth = recoverProviderHealth(currentState.providerHealth);
       let taskId: string | null = null;
       let lastError = '';
       let selectedModel: ModelCandidate | null = null;
 
-      while (tried.size < state.modelCandidates.length) {
-        const remainingCandidates = state.modelCandidates.filter((candidate) => {
+      while (tried.size < currentState.modelCandidates.length) {
+        const remainingCandidates = currentState.modelCandidates.filter((candidate) => {
           const key = `${candidate.provider}:${candidate.model}`;
           return !tried.has(key);
         });
@@ -396,7 +478,7 @@ docsRegistry: getPlanRegistry(),
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              title,
+              title: backlogItem.title,
               provider: selectedModel.provider,
               model: selectedModel.model,
             }),
@@ -412,8 +494,7 @@ docsRegistry: getPlanRegistry(),
             limiter.recordRateLimited(selectedModel.provider, selectedModel.model, retryAfterMs);
             providerHealth = onProviderRateLimited(providerHealth, selectedModel.provider, retryAfterMs);
 
-            const rateLimitMsg =
-              `${selectedModel.label} was rate limited; switching to fallback model.`;
+            const rateLimitMsg = `${selectedModel.label} was rate limited; switching to fallback model.`;
             set({
               providerHealth,
               lastFallbackReason: rateLimitMsg,
@@ -482,8 +563,23 @@ docsRegistry: getPlanRegistry(),
       }
 
       if (!taskId) {
+        // Clear swarm target on failure
+        set(s => ({
+          backlog: s.backlog.map(item =>
+            item.id === backlogItemId ? { ...item, isSwarmTarget: false } : item
+          ),
+        }));
         throw new Error(lastError || 'No provider available for task submission.');
       }
+
+      // Link swarmTaskId to the backlog item
+      set(s => ({
+        backlog: s.backlog.map(item =>
+          item.id === backlogItemId
+            ? { ...item, swarmTaskId: taskId as string }
+            : item
+        ),
+      }));
 
       // Open SSE connection
       const es = new EventSource(`/api/tasks/${taskId}/events`);
@@ -496,27 +592,74 @@ docsRegistry: getPlanRegistry(),
       };
 
       es.onerror = () => {
-        // Connection lost — could be task complete
         console.warn('[SSE] connection error or closed');
       };
+
+      try { localStorage.setItem('swarm:lastTaskId', taskId); } catch {}
 
       set({
         currentTaskId: taskId,
         eventSource: es,
         activityLog: [
           ...get().activityLog,
-          { timestamp: Date.now(), message: `Task submitted: "${title}"`, type: 'info' },
-        ],
-      });
-    } catch (err) {
-      console.error('[submitTask] Failed:', err);
-      set({
-        activityLog: [
-          ...get().activityLog,
-          { timestamp: Date.now(), message: `Failed to submit task: ${err}`, type: 'error' } as LogEntry,
+          { timestamp: Date.now(), message: `Swarm deployed: "${backlogItem.title}"`, type: 'info' } as LogEntry,
         ].slice(-100),
       });
+    } catch (err) {
+      console.error('[deploySwarm] Failed:', err);
+      set(state => ({
+        activityLog: [
+          ...state.activityLog,
+          { timestamp: Date.now(), message: `Failed to deploy swarm: ${err}`, type: 'error' } as LogEntry,
+        ].slice(-100),
+      }));
     }
+  },
+
+  resumeTask: async (taskId: string) => {
+    if (!taskId) return;
+
+    // Pre-check: verify task still exists before opening SSE
+    try {
+      const check = await fetch(`/api/tasks/${taskId}/events`, { method: 'HEAD' }).catch(() => null);
+      // If HEAD isn't supported, try a GET and abort immediately
+      if (!check || check.status === 404) {
+        console.warn('[SSE] task no longer exists, clearing stale ID:', taskId);
+        try { localStorage.removeItem('swarm:lastTaskId'); } catch {}
+        return;
+      }
+    } catch {
+      // Network error — proceed anyway, SSE will handle it
+    }
+
+    const prev = get().eventSource;
+    if (prev) prev.close();
+
+    const es = new EventSource(`/api/tasks/${taskId}/events`);
+
+    es.onmessage = (e) => {
+      try {
+        const event: SSEEvent = JSON.parse(e.data);
+        get().processSSEEvent(event);
+      } catch {}
+    };
+
+    es.onerror = () => {
+      console.warn('[SSE] failed to resume task stream');
+      try { localStorage.removeItem('swarm:lastTaskId'); } catch {}
+      es.close(); // Stop auto-retry
+    };
+
+    try { localStorage.setItem('swarm:lastTaskId', taskId); } catch {}
+
+    set({
+      currentTaskId: taskId,
+      eventSource: es,
+      activityLog: [
+        ...get().activityLog,
+        { timestamp: Date.now(), message: `Resumed task stream: ${taskId}`, type: 'info' } as LogEntry,
+      ].slice(-100),
+    });
   },
 
   processSSEEvent: (event: SSEEvent) => {
@@ -633,9 +776,7 @@ docsRegistry: getPlanRegistry(),
           progress: Math.min(0.95, agents[role].progress + 0.05),
         };
 
-        // Simulate token cost: 50-200
-        const outputCost = 50 + Math.floor(Math.random() * 150);
-        get().spendTokens(role, outputCost, 'api_call');
+        // Real token usage comes via agent_usage event; no simulated cost here
 
         // Update subtask progress
         const task2 = state.currentTask;
@@ -663,9 +804,7 @@ docsRegistry: getPlanRegistry(),
           progress: Math.min(0.9, agents[role].progress + 0.08),
         };
 
-        // Simulate token cost: 100-500
-        const toolCost = 100 + Math.floor(Math.random() * 400);
-        get().spendTokens(role, toolCost, 'tool_use');
+        // Real token usage comes via agent_usage event; no simulated cost here
 
         // Random inter-agent vehicle on tool use
         if (Math.random() < 0.3) {
@@ -752,6 +891,30 @@ docsRegistry: getPlanRegistry(),
         break;
       }
 
+      case 'agent_usage': {
+        const role = event.role;
+        const u = event.usage;
+        // Only count new input + output tokens against budget (cache reads are essentially free)
+        const totalTokens = u.inputTokens + u.outputTokens + u.cacheCreateTokens;
+
+        // Update economy with real token usage
+        get().spendTokens(role, totalTokens, 'api_call');
+
+        // Log real cost
+        const agents2 = { ...state.agents };
+        agents2[role] = {
+          ...agents2[role],
+          log: [
+            ...agents2[role].log,
+            { timestamp: Date.now(), message: `💰 ${u.model}: ${totalTokens.toLocaleString()} tokens ($${u.costUsd.toFixed(4)})`, type: 'info' },
+          ].slice(-20) as LogEntry[],
+        };
+
+        log.push({ timestamp: Date.now(), message: `${agents2[role].building.name}: ${totalTokens.toLocaleString()} tokens ($${u.costUsd.toFixed(4)})`, type: 'info' });
+        set({ agents: agents2, activityLog: log.slice(-100) });
+        break;
+      }
+
       case 'agent_error': {
         const role = event.role;
         agents[role] = {
@@ -813,11 +976,23 @@ docsRegistry: getPlanRegistry(),
         });
         log.push({ timestamp: Date.now(), message: `Task complete! All agents finished.`, type: 'info' });
 
+        // Update the swarm-target backlog item: mark done, clear swarm flags
+        const swarmItem = state.backlog.find(item => item.isSwarmTarget);
+        if (swarmItem?.linearId) {
+          get().updateLinearIssueStatus(swarmItem.linearId, 'completed');
+        }
+        const updatedBacklog = state.backlog.map(item =>
+          item.isSwarmTarget
+            ? { ...item, isSwarmTarget: false, swarmTaskId: undefined, status: 'done' as const, updatedAt: Date.now() }
+            : item
+        );
+
         // Close SSE
         const es = state.eventSource;
         if (es) es.close();
+        try { localStorage.removeItem('swarm:lastTaskId'); } catch {}
 
-        set({ agents, notifications, activityLog: log.slice(-100), eventSource: null });
+        set({ agents, notifications, activityLog: log.slice(-100), eventSource: null, currentTaskId: null, backlog: updatedBacklog });
         break;
       }
     }
@@ -853,6 +1028,34 @@ docsRegistry: getPlanRegistry(),
   setZoom: (z) => set({ zoom: Math.max(0.3, Math.min(2.5, z)) }),
   dismissNotification: (id) =>
     set({ notifications: get().notifications.map(n => n.id === id ? { ...n, read: true } : n) }),
+  fetchLimits: async () => {
+    try {
+      const res = await fetch('/api/limits');
+      if (!res.ok) return;
+      const data = await res.json();
+      const tokensPerMin = data.tokensPerMin ?? 50000;
+      // Set total budget to tokens-per-minute (the rate limit ceiling)
+      set(state => {
+        const economy = { ...state.economy, totalBudget: tokensPerMin };
+        // Also set per-agent budgets proportionally
+        const perAgent = Math.floor(tokensPerMin / 7);
+        const agentBudgets = { ...economy.agentBudgets };
+        for (const role of Object.keys(agentBudgets) as AgentRole[]) {
+          agentBudgets[role] = { ...agentBudgets[role], tokenBudget: perAgent };
+        }
+        economy.agentBudgets = agentBudgets;
+        return {
+          economy,
+          activityLog: [
+            ...state.activityLog,
+            { timestamp: Date.now(), message: `${data.provider} ${data.plan}: ${tokensPerMin.toLocaleString()} tokens/min budget`, type: 'info' } as LogEntry,
+          ].slice(-100),
+        };
+      });
+    } catch (err) {
+      console.error('[fetchLimits]', err);
+    }
+  },
   syncBacklog: async () => {
     set(state => ({ linear: { ...state.linear, syncing: true, error: null } }));
     try {
@@ -921,6 +1124,61 @@ docsRegistry: getPlanRegistry(),
           : item
       ),
     }));
+  },
+  fetchAutonomousStatus: async () => {
+    try {
+      const since = get().autonomous.lastEventId;
+      const url = since > 0 ? `/api/autonomous?since=${since}` : '/api/autonomous';
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) return;
+      const data = await res.json() as AutonomousStatus;
+      const incoming = Array.isArray(data.events) ? data.events : [];
+      set(state => {
+        const nextEventId = incoming.reduce(
+          (max, event) => Math.max(max, event.id),
+          state.autonomous.lastEventId,
+        );
+        const nextActivity = [
+          ...state.activityLog,
+          ...incoming.map(event => ({
+            timestamp: event.timestamp,
+            message: `[Autonomous] ${event.message}`,
+            type: event.type === 'info' ? 'info' : 'error',
+          } as LogEntry)),
+        ].slice(-200);
+
+        return {
+          autonomous: {
+            ...state.autonomous,
+            ...data,
+            events: [...state.autonomous.events, ...incoming].slice(-200),
+            lastEventId: nextEventId,
+          },
+          activityLog: nextActivity,
+        };
+      });
+    } catch (err) {
+      console.error('[fetchAutonomousStatus]', err);
+    }
+  },
+  setAutonomousEnabled: async (enabled: boolean) => {
+    try {
+      const res = await fetch('/api/autonomous', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) return;
+      set(state => ({
+        autonomous: {
+          ...state.autonomous,
+          enabled,
+        },
+      }));
+      await get().fetchAutonomousStatus();
+    } catch (err) {
+      console.error('[setAutonomousEnabled]', err);
+    }
   },
 
   // tick() — ANIMATION ONLY. No fake progress.

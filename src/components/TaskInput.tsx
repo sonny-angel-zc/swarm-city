@@ -54,7 +54,7 @@ export default function TaskInput() {
                 type="submit"
                 className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-green-500/20"
               >
-                Deploy →
+                Create Task →
               </button>
             )}
           </div>

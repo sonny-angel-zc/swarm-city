@@ -1,11 +1,15 @@
-import { NextRequest } from 'next/server';
-import { subscribeToTask, SSEEvent } from '@/core/orchestrator';
+import { NextRequest, NextResponse } from 'next/server';
+import { getTask, subscribeToTask, SSEEvent } from '@/core/orchestrator';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id: taskId } = await params;
+
+  if (!getTask(taskId)) {
+    return NextResponse.json({ error: 'Task not found' }, { status: 404 });
+  }
 
   const encoder = new TextEncoder();
 

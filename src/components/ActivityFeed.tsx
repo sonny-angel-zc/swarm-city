@@ -5,6 +5,7 @@ import { useSwarmStore } from '@/core/store';
 export default function ActivityFeed() {
   const log = useSwarmStore(s => s.activityLog);
   const vehicles = useSwarmStore(s => s.vehicles);
+  const autonomous = useSwarmStore(s => s.autonomous);
 
   return (
     <div className="h-28 bg-[#0d1117] border-t border-[#1e2a3a] flex items-stretch overflow-hidden">
@@ -35,12 +36,22 @@ export default function ActivityFeed() {
         <div className="text-[10px] text-white/30 uppercase tracking-wider mb-2">Live</div>
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
+            <span className="text-[11px] text-white/40">Autonomous mode</span>
+            <span className={`text-[11px] font-mono ${autonomous.enabled ? 'text-emerald-400' : 'text-white/45'}`}>
+              {autonomous.enabled ? 'ON' : 'OFF'}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
             <span className="text-[11px] text-white/40">Messages in transit</span>
             <span className="text-[11px] font-mono text-blue-400">{vehicles.length}</span>
           </div>
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-white/40">Log entries</span>
             <span className="text-[11px] font-mono text-white/50">{log.length}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-white/40">Auto completed</span>
+            <span className="text-[11px] font-mono text-emerald-300">{autonomous.completedTasks.length}</span>
           </div>
         </div>
       </div>

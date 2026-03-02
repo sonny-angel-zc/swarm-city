@@ -35,6 +35,9 @@ function getAmbientColor(hour: number): { r: number; g: number; b: number } {
 
 // ─── Road layout ─────────────────────────────────────────────────────────────
 
+// The 4 center tiles form the fountain plaza — excluded from road network
+const PLAZA_TILES = new Set(['7,7', '7,8', '8,7', '8,8']);
+
 const ROAD_TILES = new Set<string>();
 for (let i = 0; i < GRID_SIZE; i++) {
   ROAD_TILES.add(`7,${i}`);
@@ -52,6 +55,8 @@ for (let i = 2; i < 13; i++) {
   ROAD_TILES.add(`11,${i}`);
   ROAD_TILES.add(`12,${i}`);
 }
+// Remove plaza tiles from roads
+for (const key of PLAZA_TILES) ROAD_TILES.delete(key);
 
 // ─── Power grid edges (building-to-building along roads) ─────────────────────
 
@@ -89,6 +94,189 @@ const DECO_BUILDINGS: DecoBuilding[] = [
   { gx: 9, gy: 9, h: 15, color: '#151d30', sprite: DECO_SPRITES[3], scale: 0.5 },
   { gx: 10, gy: 10, h: 11, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
 ];
+
+// ─── Fountain drawing ─────────────────────────────────────────────────────────
+
+/**
+ * Draw the fountain basin, water surface, column, and spout glow.
+ * Rendered BEFORE agent buildings so City Hall sits on top of the plaza base.
+ */
+function drawFountainBase(
+  ctx: CanvasRenderingContext2D,
+  time: number,
+  intensity: number,
+  darkness: number,
+) {
+  const { x: cx, y: cy } = gridToScreen(7.5, 7.5);
+  const rX = 36, rY = 20, wallH = 7;
+
+  ctx.save();
+
+  // Drop shadow
+  ctx.beginPath();
+  ctx.ellipse(cx + 3, cy + wallH + 3, rX * 1.08, rY * 0.68, 0, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(0,0,0,0.2)';
+  ctx.fill();
+
+  // Basin wall face (shifted-down ellipse creates depth)
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + wallH, rX, rY, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#141e2a';
+  ctx.fill();
+
+  // Rim top face
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, rX, rY, 0, 0, Math.PI * 2);
+  const rimG = ctx.createRadialGradient(cx, cy, rX * 0.55, cx, cy, rX);
+  rimG.addColorStop(0, '#253848');
+  rimG.addColorStop(1, '#1c2c3a');
+  ctx.fillStyle = rimG;
+  ctx.fill();
+  ctx.strokeStyle = `rgba(80,160,220,${0.2 + darkness * 0.12})`;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Water surface
+  const wX = rX - 6, wY = rY - 3;
+  const shimmer = Math.sin(time * 2.5) * 0.018;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, wX, wY, 0, 0, Math.PI * 2);
+  const wG = ctx.createRadialGradient(cx, cy, 0, cx, cy, wX);
+  const wA = 0.32 + intensity * 0.42 + shimmer;
+  wG.addColorStop(0, `rgba(145,235,255,${wA})`);
+  wG.addColorStop(0.55, `rgba(55,155,215,${wA * 0.65})`);
+  wG.addColorStop(1, `rgba(22,70,125,${wA * 0.42})`);
+  ctx.fillStyle = wG;
+  ctx.fill();
+
+  // Surface ripples
+  for (let r = 0; r < 3; r++) {
+    const ph = ((time * 0.72 + r * 0.34) % 1);
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, wX * (0.12 + ph * 0.72), wY * (0.12 + ph * 0.72), 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(195,248,255,${(1 - ph) * 0.1 * (0.4 + intensity * 0.6)})`;
+    ctx.lineWidth = 0.6;
+    ctx.stroke();
+  }
+
+  // Central column
+  const colH = 13 + intensity * 5;
+  drawIsoBox(ctx, cx, cy, 10, 6, colH, '#1e3044', '#162538', '#1a2d3e', 'rgba(65,145,195,0.22)');
+
+  // Spout glow
+  const gR = 7 + intensity * 19 + Math.sin(time * 3.0) * 1.4;
+  const gg = ctx.createRadialGradient(cx, cy - colH, 0, cx, cy - colH, gR);
+  gg.addColorStop(0, `rgba(135,238,255,${0.18 + intensity * 0.48})`);
+  gg.addColorStop(0.5, `rgba(50,150,215,${(0.18 + intensity * 0.48) * 0.3})`);
+  gg.addColorStop(1, 'rgba(45,130,200,0)');
+  ctx.fillStyle = gg;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy - colH, gR, gR * 0.62, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Dormant drips when no agents active
+  if (intensity <= 0) {
+    for (let d = 0; d < 3; d++) {
+      const dp = ((time * 0.45 + d * 0.33) % 1);
+      ctx.beginPath();
+      ctx.arc(cx + (d - 1) * 2, cy - colH + dp * (colH * 0.55), 0.9, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(120,200,240,${0.45 * (1 - dp)})`;
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Draw animated water jets, mist, and pulse rings.
+ * Rendered AFTER agent buildings so spray arcs over the rooftops.
+ */
+function drawFountainSpray(
+  ctx: CanvasRenderingContext2D,
+  time: number,
+  intensity: number,
+) {
+  if (intensity <= 0) return;
+
+  const { x: cx, y: cy } = gridToScreen(7.5, 7.5);
+  const colH = 13 + intensity * 5;
+  const spoutY = cy - colH;
+  const jets = intensity < 0.34 ? 6 : intensity < 0.67 ? 14 : 22;
+  const arcH = (8 + intensity * 28) * 4;
+  const spread = 28 + intensity * 14;
+
+  ctx.save();
+
+  // Mist ring (active+)
+  if (intensity >= 0.34) {
+    for (let m = 0; m < 12; m++) {
+      const ma = (m / 12) * Math.PI * 2 + time * 0.07;
+      const mr = 24 + Math.sin(time * 0.6 + m * 0.5) * 3;
+      const mA = (0.03 + Math.sin(time * 0.3 + m) * 0.012) * intensity;
+      ctx.beginPath();
+      ctx.arc(cx + Math.cos(ma) * mr, cy + Math.sin(ma) * mr * 0.55, 4 + Math.sin(time * 0.5 + m) * 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(175,232,255,${mA})`;
+      ctx.fill();
+    }
+  }
+
+  // Jet arcs
+  for (let j = 0; j < jets; j++) {
+    const ba = (j / jets) * Math.PI * 2 + time * 0.12;
+    const lx = cx + Math.cos(ba) * spread;
+    const ly = cy + Math.sin(ba) * spread * 0.55;
+
+    ctx.beginPath();
+    for (let s = 0; s <= 14; s++) {
+      const t = s / 14;
+      const ax = cx + (lx - cx) * t;
+      const ay = spoutY + (ly - spoutY) * t - arcH * t * (1 - t);
+      s === 0 ? ctx.moveTo(ax, ay) : ctx.lineTo(ax, ay);
+    }
+    ctx.strokeStyle = `rgba(165,235,255,${0.33 + Math.sin(time * 2.0 + j * 0.6) * 0.1})`;
+    ctx.lineWidth = 0.85 + intensity * 0.55;
+    ctx.stroke();
+
+    // Moving droplet along arc
+    const tp = ((time * 0.85 + j * 0.285) % 1);
+    const tx = cx + (lx - cx) * tp;
+    const ty = spoutY + (ly - spoutY) * tp - arcH * tp * (1 - tp);
+    const dropA = 0.5 * (1 - Math.abs(tp - 0.5) * 1.4);
+    if (dropA > 0) {
+      ctx.beginPath();
+      ctx.arc(tx, ty, 0.75 + (1 - Math.abs(tp - 0.5) * 2) * 0.9, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(210,248,255,${dropA})`;
+      ctx.fill();
+    }
+  }
+
+  // Surge: 4 diagonal mini-jets
+  if (intensity >= 0.67) {
+    for (let m = 0; m < 4; m++) {
+      const ma = (m / 4) * Math.PI * 2 + time * 0.5;
+      const ml = 8 + Math.sin(time * 3.1 + m) * 3;
+      ctx.beginPath();
+      ctx.moveTo(cx, spoutY);
+      ctx.lineTo(cx + Math.cos(ma) * ml * 0.4, spoutY - Math.abs(Math.sin(ma)) * ml);
+      ctx.strokeStyle = `rgba(205,250,255,${0.42 + Math.sin(time * 4 + m) * 0.18})`;
+      ctx.lineWidth = 0.65;
+      ctx.stroke();
+    }
+  }
+
+  // Sync pulse ring (surge state)
+  if (intensity >= 0.67) {
+    const pt = (time * 0.42) % 1;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 18 + pt * 56, (18 + pt * 56) * 0.55, 0, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(110,215,255,${(1 - pt) * 0.17 * intensity})`;
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
 
 // ─── Building details ────────────────────────────────────────────────────────
 
@@ -182,8 +370,12 @@ export default function CityCanvas() {
 
   const tick = useSwarmStore(s => s.tick);
   const selectAgent = useSwarmStore(s => s.selectAgent);
+  const spawnParticles = useSwarmStore(s => s.spawnParticles);
   const setCameraPos = useSwarmStore(s => s.setCameraPos);
   const setZoom = useSwarmStore(s => s.setZoom);
+
+  // Track coins tossed into the fountain
+  const coinCountRef = useRef(0);
 
   const storeRef = useRef(useSwarmStore.getState());
   useEffect(() => useSwarmStore.subscribe(s => { storeRef.current = s; }), []);
@@ -471,8 +663,17 @@ export default function CityCanvas() {
       if (active) lineAlpha = prominent ? 0.9 : 0.35;
       if (warned) lineAlpha *= 0.4 + Math.sin(time * 12) * 0.4; // rapid flicker
 
-      // Route through road intersection (center of grid)
-      const mid = gridToScreen(7.5, 7.5);
+      // Route near the fountain plaza but arc around it to avoid piercing the basin.
+      // Offset the bezier control point perpendicularly based on line direction.
+      const midBase = gridToScreen(7.5, 7.5);
+      const ldx = p2.x - p1.x;
+      const ldy = p2.y - p1.y;
+      const lLen = Math.sqrt(ldx * ldx + ldy * ldy) || 1;
+      const flip = (edge.from.charCodeAt(0) + edge.to.charCodeAt(0)) % 2 === 0 ? 1 : -1;
+      const mid = {
+        x: midBase.x + (-ldy / lLen) * 52 * flip,
+        y: midBase.y + (ldx / lLen) * 52 * flip,
+      };
 
       ctx.beginPath();
       ctx.moveTo(p1.x, p1.y);
@@ -593,11 +794,18 @@ export default function CityCanvas() {
     ctx.translate(W / 2 + state.cameraX, H * 0.38 + state.cameraY);
     ctx.scale(state.zoom, state.zoom);
 
+    // Intensity: fraction of agents currently working (drives fountain animation state)
+    const agentRoles = Object.keys(state.agents) as AgentRole[];
+    const workingCount = agentRoles.filter(r => state.agents[r].status === 'working').length;
+    const fountainIntensity = workingCount / agentRoles.length;
+
     // Ground tiles
     for (let gx = 0; gx < GRID_SIZE; gx++) {
       for (let gy = 0; gy < GRID_SIZE; gy++) {
         const pos = gridToScreen(gx, gy);
-        const isRoad = ROAD_TILES.has(`${gx},${gy}`);
+        const tileKey = `${gx},${gy}`;
+        const isPlaza = PLAZA_TILES.has(tileKey);
+        const isRoad = ROAD_TILES.has(tileKey);
 
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y - TILE_HEIGHT / 2);
@@ -606,7 +814,15 @@ export default function CityCanvas() {
         ctx.lineTo(pos.x - TILE_WIDTH / 2, pos.y);
         ctx.closePath();
 
-        if (isRoad) {
+        if (isPlaza) {
+          // Stone plaza tile — dark slate with cyan tint, distinct from road
+          const sb = Math.round(19 + (1 - darkness) * 8);
+          ctx.fillStyle = `rgb(${sb + 2},${sb + 9},${sb + 22})`;
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(80,150,220,0.12)';
+          ctx.lineWidth = 0.6;
+          ctx.stroke();
+        } else if (isRoad) {
           // Road slightly lighter during day
           const roadBright = Math.round(21 + (1 - darkness) * 8);
           ctx.fillStyle = `rgb(${roadBright},${roadBright + 7},${roadBright + 24})`;
@@ -671,6 +887,9 @@ export default function CityCanvas() {
         }
       }
     }
+
+    // ─── Fountain base (basin + water surface, below buildings) ────────────
+    drawFountainBase(ctx, time, fountainIntensity, darkness);
 
     // ─── Power grid lines (before buildings, so they appear under) ─────────
     if (overlay !== 'economy') {
@@ -742,6 +961,9 @@ export default function CityCanvas() {
       drawBuilding(ctx, cfg.role, time, darkness, overlay);
     }
 
+    // ─── Fountain spray (jets + mist, above buildings) ──────────────────────
+    drawFountainSpray(ctx, time, fountainIntensity);
+
     // Particles
     for (const p of state.particles) {
       const alpha = Math.max(0, p.life / p.maxLife);
@@ -777,6 +999,19 @@ export default function CityCanvas() {
         ctx.fill();
         ctx.shadowBlur = 0;
 
+        ctx.restore();
+      } else if (p.type === 'water') {
+        // Water droplet — cyan radial gradient
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.85;
+        const wr = Math.max(0.4, p.size);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, wr, 0, Math.PI * 2);
+        const wg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, wr);
+        wg.addColorStop(0, 'rgba(210,250,255,1)');
+        wg.addColorStop(1, 'rgba(60,160,220,0.3)');
+        ctx.fillStyle = wg;
+        ctx.fill();
         ctx.restore();
       } else {
         ctx.beginPath();
@@ -820,6 +1055,27 @@ export default function CityCanvas() {
     const mx = (e.clientX - rect.left - canvas.width / 2 - state.cameraX) / state.zoom;
     const my = (e.clientY - rect.top - canvas.height * 0.38 - state.cameraY) / state.zoom;
 
+    // Fountain coin toss — click within 40px of the plaza center
+    const fp = gridToScreen(7.5, 7.5);
+    const fdx = mx - fp.x;
+    const fdy = my - fp.y;
+    if (Math.sqrt(fdx * fdx + fdy * fdy) < 40) {
+      coinCountRef.current += 1;
+      // Arc a coin from click point toward fountain with parabolic velocity
+      spawnParticles([{
+        x: mx + (Math.random() - 0.5) * 8,
+        y: my,
+        vx: (fp.x - mx) * 0.12 + (Math.random() - 0.5) * 4,
+        vy: -28 - Math.random() * 14,
+        life: 1.1,
+        maxLife: 1.1,
+        color: '#FFD700',
+        size: 3.5,
+        type: 'coin',
+      }]);
+      return;
+    }
+
     for (const cfg of BUILDING_CONFIGS) {
       const pos = gridToScreen(cfg.gridX, cfg.gridY);
       const bw = cfg.width * TILE_WIDTH * 0.8;
@@ -831,7 +1087,7 @@ export default function CityCanvas() {
       }
     }
     selectAgent(null);
-  }, [selectAgent]);
+  }, [selectAgent, spawnParticles]);
 
   // Pan & zoom
   const dragStartRef = useRef({ x: 0, y: 0 });
