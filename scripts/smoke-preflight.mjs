@@ -4,6 +4,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const MIN_NODE_MAJOR = 20;
 const START_TIMEOUT_MS = 45_000;
@@ -21,6 +22,13 @@ function fail(message, hint) {
     console.error(`[smoke:preflight] HINT: ${hint}`);
   }
   process.exit(1);
+}
+
+function normalizeGitStatusLines(stdout) {
+  return stdout
+    .split('\n')
+    .map(line => line.trimEnd())
+    .filter(Boolean);
 }
 
 function parseSmokeConfig() {
@@ -92,7 +100,7 @@ function ensureDependencyInstalled(packagePath, label) {
   }
 }
 
-function parseWorktreeChanges(lines) {
+export function parseWorktreeChanges(lines) {
   const summary = {
     modified: 0,
     deleted: 0,
@@ -126,29 +134,7 @@ function parseWorktreeChanges(lines) {
   return summary;
 }
 
-function ensureCleanWorktree() {
-  const result = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
-    stdio: 'pipe',
-    encoding: 'utf-8',
-  });
-
-  if (result.error || result.status !== 0) {
-    fail(
-      'Unable to inspect git worktree state before smoke run.',
-      'Ensure git is installed and run smoke preflight from the repository root.',
-    );
-  }
-
-  const lines = result.stdout
-    .split('\n')
-    .map(line => line.trimEnd())
-    .filter(Boolean);
-
-  if (lines.length === 0) {
-    return;
-  }
-
-  const summary = parseWorktreeChanges(lines);
+function buildDirtyWorktreeFailure(lines, summary) {
   const summaryParts = [
     `modified=${summary.modified}`,
     `deleted=${summary.deleted}`,
@@ -157,13 +143,39 @@ function ensureCleanWorktree() {
   if (summary.other > 0) {
     summaryParts.push(`other=${summary.other}`);
   }
+
   const preview = lines.slice(0, 8).join('\n');
   const remainder = lines.length > 8 ? `\n...and ${lines.length - 8} more` : '';
 
-  fail(
-    `Dirty worktree detected (${summaryParts.join(', ')}). Smoke preflight requires a clean repository state.`,
-    `Commit/stash/discard local changes (including untracked files), then retry.\nInspect with: git status --short\n\nCurrent changes:\n${preview}${remainder}`,
-  );
+  return {
+    message: `Dirty worktree detected (${summaryParts.join(', ')}). Smoke preflight requires a clean repository state.`,
+    hint: `Commit/stash/discard local changes (including untracked files), then retry.\nInspect with: git status --short\n\nCurrent changes:\n${preview}${remainder}`,
+  };
+}
+
+export function ensureCleanWorktree({ spawnSyncImpl = spawnSync, failImpl = fail } = {}) {
+  const result = spawnSyncImpl('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
+    stdio: 'pipe',
+    encoding: 'utf-8',
+  });
+
+  if (result.error || result.status !== 0) {
+    failImpl(
+      'Unable to inspect git worktree state before smoke run.',
+      'Ensure git is installed and run smoke preflight from the repository root.',
+    );
+    return;
+  }
+
+  const lines = normalizeGitStatusLines(result.stdout);
+
+  if (lines.length === 0) {
+    return;
+  }
+
+  const summary = parseWorktreeChanges(lines);
+  const { message, hint } = buildDirtyWorktreeFailure(lines, summary);
+  failImpl(message, hint);
 }
 
 function checkUrlReady(baseUrl) {
@@ -300,6 +312,9 @@ async function main() {
   log('Preflight checks passed.');
 }
 
-main().catch(error => {
-  fail(`Unexpected preflight failure: ${error?.message ?? String(error)}`);
-});
+const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isMain) {
+  main().catch(error => {
+    fail(`Unexpected preflight failure: ${error?.message ?? String(error)}`);
+  });
+}
