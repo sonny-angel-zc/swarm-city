@@ -36,6 +36,8 @@ type TaskState = {
   };
 };
 
+type AgentRuntimeConfig = TaskState['agentConfig'];
+
 // Persist across hot reloads in dev mode by attaching to globalThis
 const globalForTasks = globalThis as unknown as { __swarmTaskStates?: Map<string, TaskState> };
 if (!globalForTasks.__swarmTaskStates) {
@@ -54,6 +56,58 @@ const AGENT_ORDER: AgentRole[] = [
   'devils_advocate',
   'reviewer',
 ];
+
+type StageFailureMode = 'abort_pipeline' | 'continue_pipeline';
+
+export type StageExecutionPolicy = {
+  prerequisites: AgentRole[];
+  retryCeiling: number;
+  onFailure: StageFailureMode;
+};
+
+type StageExecutionRule = {
+  prerequisites: AgentRole[];
+  onFailure: StageFailureMode;
+  retryEnvKey: string;
+};
+
+const STAGE_EXECUTION_RULES: Record<AgentRole, StageExecutionRule> = {
+  pm: {
+    prerequisites: [],
+    onFailure: 'abort_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_PM',
+  },
+  researcher: {
+    prerequisites: [],
+    onFailure: 'abort_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_RESEARCHER',
+  },
+  designer: {
+    prerequisites: ['researcher'],
+    onFailure: 'abort_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_DESIGNER',
+  },
+  engineer: {
+    prerequisites: ['designer'],
+    onFailure: 'abort_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_ENGINEER',
+  },
+  qa: {
+    prerequisites: ['engineer'],
+    onFailure: 'continue_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_QA',
+  },
+  devils_advocate: {
+    prerequisites: ['engineer'],
+    onFailure: 'continue_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_DEVILS_ADVOCATE',
+  },
+  reviewer: {
+    prerequisites: ['qa', 'devils_advocate'],
+    onFailure: 'continue_pipeline',
+    retryEnvKey: 'SWARM_AGENT_MAX_RETRIES_REVIEWER',
+  },
+};
 
 const AGENT_SYSTEM_PROMPTS: Record<AgentRole, string> = {
   pm: 'You are a PM. Decompose tasks and coordinate the team.',
@@ -428,6 +482,28 @@ function finalizeAutonomousBranch(params: {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+export function resolveStageExecutionPolicies(
+  env: NodeJS.ProcessEnv = process.env,
+): Record<AgentRole, StageExecutionPolicy> {
+  const fallbackRetryCeiling = parsePositiveInt(env.SWARM_AGENT_MAX_RETRIES, 4);
+  return (Object.keys(STAGE_EXECUTION_RULES) as AgentRole[]).reduce((acc, role) => {
+    const rule = STAGE_EXECUTION_RULES[role];
+    acc[role] = {
+      prerequisites: [...rule.prerequisites],
+      onFailure: rule.onFailure,
+      retryCeiling: parsePositiveInt(env[rule.retryEnvKey], fallbackRetryCeiling),
+    };
+    return acc;
+  }, {} as Record<AgentRole, StageExecutionPolicy>);
 }
 
 type RetryKind = 'rate_limit' | 'token_limit' | 'transient' | 'none';
@@ -1117,9 +1193,9 @@ async function runAgentWithRecovery(
   role: AgentRole,
   prompt: string,
   workDir: string,
-  config: TaskState['agentConfig'],
+  config: AgentRuntimeConfig,
+  maxAttempts: number,
 ): Promise<string> {
-  const maxAttempts = Number(process.env.SWARM_AGENT_MAX_RETRIES ?? '4');
   let effectivePrompt = prompt;
 
   for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
@@ -1158,9 +1234,122 @@ function runAgent(
   role: AgentRole,
   prompt: string,
   workDir: string,
-  config: TaskState['agentConfig'],
+  config: AgentRuntimeConfig,
+  maxAttempts: number,
 ): Promise<string> {
-  return runAgentWithRecovery(taskId, role, prompt, workDir, config);
+  return runAgentWithRecovery(taskId, role, prompt, workDir, config, maxAttempts);
+}
+
+export type StageOutcome = 'succeeded' | 'failed' | 'blocked' | 'skipped';
+
+type StageExecutionDependencies = {
+  setupWorkDirFn: (taskId: string, role: AgentRole) => WorktreeInfo;
+  runAgentFn: (
+    taskId: string,
+    role: AgentRole,
+    prompt: string,
+    workDir: string,
+    config: AgentRuntimeConfig,
+    maxAttempts: number,
+  ) => Promise<string>;
+  emitEventFn: (taskId: string, event: SSEEvent) => void;
+};
+
+export async function executeStagedSubtasks(params: {
+  taskId: string;
+  subtasks: SubTask[];
+  accumulatedContext: string[];
+  humanMessages: Map<AgentRole, string[]>;
+  agentConfig: AgentRuntimeConfig;
+  stagePolicies?: Record<AgentRole, StageExecutionPolicy>;
+  deps?: Partial<StageExecutionDependencies>;
+}): Promise<Partial<Record<AgentRole, StageOutcome>>> {
+  const stagePolicies = params.stagePolicies ?? resolveStageExecutionPolicies();
+  const deps: StageExecutionDependencies = {
+    setupWorkDirFn: params.deps?.setupWorkDirFn ?? setupWorkDir,
+    runAgentFn: params.deps?.runAgentFn ?? runAgent,
+    emitEventFn: params.deps?.emitEventFn ?? emitEvent,
+  };
+  const outcomes: Partial<Record<AgentRole, StageOutcome>> = {};
+  const subtasksByRole = new Map<AgentRole, SubTask>(params.subtasks.map((subtask) => [subtask.assignedTo, subtask]));
+  let abortPipeline = false;
+
+  for (const role of AGENT_ORDER) {
+    const subtask = subtasksByRole.get(role);
+    if (!subtask) continue;
+
+    if (abortPipeline) {
+      outcomes[role] = 'skipped';
+      subtask.status = 'done';
+      deps.emitEventFn(params.taskId, {
+        type: 'agent_error',
+        taskId: params.taskId,
+        role,
+        error: 'Skipped because a prerequisite critical stage failed and aborted the pipeline.',
+      });
+      continue;
+    }
+
+    const policy = stagePolicies[role];
+    const failedPrerequisites = policy.prerequisites.filter((prerequisiteRole) => outcomes[prerequisiteRole] !== 'succeeded');
+    if (failedPrerequisites.length > 0) {
+      outcomes[role] = 'blocked';
+      subtask.status = 'done';
+      deps.emitEventFn(params.taskId, {
+        type: 'agent_error',
+        taskId: params.taskId,
+        role,
+        error: `Blocked by failed prerequisite stage(s): ${failedPrerequisites.join(', ')}`,
+      });
+      continue;
+    }
+
+    subtask.status = 'in_progress';
+    deps.emitEventFn(params.taskId, { type: 'agent_assigned', taskId: params.taskId, subtask: { ...subtask }, role });
+
+    const worktree = deps.setupWorkDirFn(params.taskId, role);
+    deps.emitEventFn(params.taskId, {
+      type: 'agent_workspace',
+      taskId: params.taskId,
+      role,
+      worktreePath: worktree.dir,
+      branch: worktree.branch,
+      created: worktree.created,
+    });
+
+    const priorContext = params.accumulatedContext.join('\n\n---\n\n');
+    const humanMsgs = (params.humanMessages.get(role) ?? []).join('\n');
+    const agentPrompt = [
+      priorContext && `Context from prior agents:\n${priorContext}`,
+      humanMsgs && `Human messages:\n${humanMsgs}`,
+      `Your task: ${subtask.title}\n${subtask.description}`,
+    ].filter(Boolean).join('\n\n---\n\n');
+
+    try {
+      const output = await deps.runAgentFn(
+        params.taskId,
+        role,
+        agentPrompt,
+        worktree.dir,
+        params.agentConfig,
+        policy.retryCeiling,
+      );
+      params.accumulatedContext.push(`## ${role.toUpperCase()}:\n${output}`);
+      subtask.status = 'done';
+      subtask.progress = 1;
+      outcomes[role] = 'succeeded';
+      deps.emitEventFn(params.taskId, { type: 'agent_done', taskId: params.taskId, role, output });
+    } catch (err) {
+      subtask.status = 'done';
+      outcomes[role] = 'failed';
+      deps.emitEventFn(params.taskId, { type: 'agent_error', taskId: params.taskId, role, error: String(err) });
+      if (policy.onFailure === 'abort_pipeline') {
+        abortPipeline = true;
+      }
+    }
+  }
+
+  return outcomes;
 }
 
 // ─── PM decomposition ─────────────────────────────────────────────────────────
@@ -1168,8 +1357,9 @@ function runAgent(
 async function runPMDecomposition(
   taskId: string,
   title: string,
-  agentConfig: TaskState['agentConfig'],
+  agentConfig: AgentRuntimeConfig,
 ): Promise<SubTask[]> {
+  const stagePolicies = resolveStageExecutionPolicies();
   const worktree = setupWorkDir(taskId, 'pm');
   emitEvent(taskId, {
     type: 'agent_workspace',
@@ -1197,7 +1387,7 @@ async function runPMDecomposition(
 
   let rawOutput = '';
   try {
-    rawOutput = await runAgent(taskId, 'pm', prompt, worktree.dir, agentConfig);
+    rawOutput = await runAgent(taskId, 'pm', prompt, worktree.dir, agentConfig, stagePolicies.pm.retryCeiling);
   } catch (err) {
     console.error('[orchestrator] PM decomposition failed:', err);
   }
@@ -1244,43 +1434,14 @@ async function orchestrate(taskId: string) {
     state.task = { ...state.task, subtasks, status: 'in_progress' };
     emitEvent(taskId, { type: 'decomposition_complete', taskId, subtasks });
 
-    // Run agents sequentially
-    for (const subtask of subtasks) {
-      const role = subtask.assignedTo;
-
-      subtask.status = 'in_progress';
-      emitEvent(taskId, { type: 'agent_assigned', taskId, subtask: { ...subtask }, role });
-
-      const worktree = setupWorkDir(taskId, role);
-      emitEvent(taskId, {
-        type: 'agent_workspace',
-        taskId,
-        role,
-        worktreePath: worktree.dir,
-        branch: worktree.branch,
-        created: worktree.created,
-      });
-
-      // Build prompt — prepend prior context
-      const priorContext = state.accumulatedContext.join('\n\n---\n\n');
-      const humanMsgs = (state.humanMessages.get(role) ?? []).join('\n');
-      const agentPrompt = [
-        priorContext && `Context from prior agents:\n${priorContext}`,
-        humanMsgs && `Human messages:\n${humanMsgs}`,
-        `Your task: ${subtask.title}\n${subtask.description}`,
-      ].filter(Boolean).join('\n\n---\n\n');
-
-      try {
-        const output = await runAgent(taskId, role, agentPrompt, worktree.dir, state.agentConfig);
-        state.accumulatedContext.push(`## ${role.toUpperCase()}:\n${output}`);
-        subtask.status = 'done';
-        subtask.progress = 1;
-        emitEvent(taskId, { type: 'agent_done', taskId, role, output });
-      } catch (err) {
-        subtask.status = 'done';
-        emitEvent(taskId, { type: 'agent_error', taskId, role, error: String(err) });
-      }
-    }
+    await executeStagedSubtasks({
+      taskId,
+      subtasks,
+      accumulatedContext: state.accumulatedContext,
+      humanMessages: state.humanMessages,
+      agentConfig: state.agentConfig,
+      stagePolicies: resolveStageExecutionPolicies(),
+    });
 
     state.task.status = 'done';
     emitEvent(taskId, { type: 'task_complete', taskId });
