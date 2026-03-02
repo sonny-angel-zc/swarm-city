@@ -182,6 +182,32 @@ async function focusThemeToggleViaTab(page: import('playwright/test').Page) {
   return toggle;
 }
 
+async function expectVisibleKeyboardFocus(toggle: import('playwright/test').Locator) {
+  const focusIndicators = await toggle.evaluate((element) => {
+    const style = window.getComputedStyle(element);
+    return {
+      boxShadow: style.boxShadow,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      outlineColor: style.outlineColor,
+    };
+  });
+
+  const hasBoxShadowFocusRing =
+    focusIndicators.boxShadow !== 'none' && focusIndicators.boxShadow.trim().length > 0;
+  const hasOutlineFocusRing =
+    focusIndicators.outlineStyle !== 'none' &&
+    focusIndicators.outlineWidth !== '0px' &&
+    focusIndicators.outlineColor !== 'rgba(0, 0, 0, 0)';
+
+  expect(
+    hasBoxShadowFocusRing || hasOutlineFocusRing,
+    `Expected visible keyboard focus indicator on theme toggle, got boxShadow="${focusIndicators.boxShadow}", `
+      + `outlineStyle="${focusIndicators.outlineStyle}", outlineWidth="${focusIndicators.outlineWidth}", `
+      + `outlineColor="${focusIndicators.outlineColor}"`,
+  ).toBeTruthy();
+}
+
 async function mockDashboardBootstrap(page: import('playwright/test').Page) {
   await page.route('**/api/limits', async (route) => {
     await route.fulfill({
@@ -382,6 +408,7 @@ test.describe('dashboard theme toggle', () => {
   test('TT-A11Y-02 keeps switch semantics and updates ARIA state on repeated interactions', async ({ page }) => {
     await gotoDashboard(page);
 
+    await expect(page.getByRole('switch', { name: 'Switch to light mode' })).toHaveCount(1);
     const toggle = page.getByTestId(TEST_IDS.themeToggleSwitch);
     await expect(toggle).toHaveAttribute('role', 'switch');
     let expectedTheme: 'dark' | 'light' = 'dark';
@@ -398,6 +425,7 @@ test.describe('dashboard theme toggle', () => {
     await gotoDashboard(page);
 
     const toggle = await focusThemeToggleViaTab(page);
+    await expectVisibleKeyboardFocus(toggle);
     await expect(toggle).toHaveAttribute('role', 'switch');
     await expect(toggle).toHaveAttribute('aria-checked', 'true');
     await expect(toggle).toHaveAttribute('aria-label', 'Switch to light mode');

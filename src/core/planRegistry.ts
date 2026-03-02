@@ -124,6 +124,23 @@ const DOCS_SEED: PlanDocument[] = [
     ].join('\n'),
   },
   {
+    id: 'theme-toggle-coverage-review-swa-65-subtask-8',
+    title: 'Theme Toggle Coverage Review (SWA-65 Subtask 8/8)',
+    path: 'docs/testing/theme-toggle-coverage-review-swa-65-subtask-8.md',
+    category: 'reference',
+    track: 'foundation',
+    updatedAt: '2026-03-02',
+    summary: 'Final SWA-65 closure review mapping each accessibility requirement to concrete Playwright assertions and validation evidence.',
+    tags: ['theme', 'accessibility', 'e2e', 'playwright', 'swa-65', 'coverage', 'traceability'],
+    content: [
+      'SWA-65 subtask 8/8 validates closure of planned QA scope with traceable requirement coverage.',
+      '- Maps TT-A11Y-01..06 to concrete assertions in tests/theme-toggle.spec.ts.',
+      '- Confirms explicit keyboard focus visibility assertion for theme toggle.',
+      '- Confirms switch semantics, keyboard activation parity, and WCAG contrast checks in both themes.',
+      '- Records targeted validation command and pass result for auditability.',
+    ].join('\n'),
+  },
+  {
     id: 'connect-your-tools-guide',
     title: 'Connect Your Tools Guide',
     path: 'docs/guides/connect-your-tools.md',
