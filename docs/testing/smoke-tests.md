@@ -38,6 +38,33 @@ npm run test:smoke
 
 Each smoke run now starts with `test:smoke:preflight`, which fails fast on missing tooling, dirty git worktrees, invalid `SMOKE_HOST`/`SMOKE_PORT`, missing dependencies, or server startup/readiness errors.
 
+### Preflight failure contract (stderr)
+
+Downstream automation can parse smoke preflight failures from `stderr` using this versioned contract.
+
+- On failure, preflight exits non-zero and always emits:
+  - `FAIL_CODE:<code>`
+  - `FAIL_FIELD:contract_version=1`
+- It may emit additional `FAIL_FIELD:<key>=<value>` lines before human-readable `[smoke:preflight] ERROR/HINT` lines.
+- Treat unknown `FAIL_FIELD` keys as additive and ignore them safely.
+- `contract_version=1` compatibility rule: existing `FAIL_CODE` meanings and required fields are stable; new codes/fields may be added without breaking v1 parsers.
+
+Required fields by `FAIL_CODE` (in addition to `contract_version`):
+
+| FAIL_CODE | Required `FAIL_FIELD` keys |
+| --- | --- |
+| `INVALID_SMOKE_HOST` | `reason` (`empty` or `whitespace`) |
+| `INVALID_SMOKE_PORT` | `port_raw` |
+| `INVALID_PREFLIGHT_MODE` | `mode` |
+| `NODE_VERSION_UNSUPPORTED` | `detected_version`, `min_major` |
+| `REQUIRED_TOOL_UNAVAILABLE` | `tool` |
+| `DEPENDENCY_MISSING` | `dependency`, `dependency_path` |
+| `WORKTREE_STATUS_UNAVAILABLE` | none |
+| `WORKTREE_DIRTY` | `modified`, `deleted`, `untracked`, `other` |
+| `SERVER_START_TIMEOUT` | `base_url`, `timeout_seconds` |
+| `SERVER_NOT_REACHABLE` | `base_url`, `mode` |
+| `UNEXPECTED_FAILURE` | `error_name` |
+
 ## CI-equivalent run
 
 Run with CI semantics (single worker, zero retries):

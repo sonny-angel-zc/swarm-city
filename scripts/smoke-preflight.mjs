@@ -10,12 +10,26 @@ const START_TIMEOUT_MS = 45_000;
 const POLL_INTERVAL_MS = 1_000;
 const REQUEST_TIMEOUT_MS = 2_500;
 const PREFLIGHT_MODES = new Set(['listen', 'check', 'skip']);
+const FAILURE_CONTRACT_VERSION = '1';
 
 function log(message) {
   console.log(`[smoke:preflight] ${message}`);
 }
 
-function fail(message, hint) {
+function serializeFailValue(value) {
+  return String(value).replace(/\r?\n/g, '\\n');
+}
+
+function emitFailureContract(code, fields = {}) {
+  process.stderr.write(`FAIL_CODE:${code}\n`);
+  process.stderr.write(`FAIL_FIELD:contract_version=${FAILURE_CONTRACT_VERSION}\n`);
+  for (const [key, value] of Object.entries(fields)) {
+    process.stderr.write(`FAIL_FIELD:${key}=${serializeFailValue(value)}\n`);
+  }
+}
+
+function fail({ code, message, hint, fields }) {
+  emitFailureContract(code, fields);
   console.error(`[smoke:preflight] ERROR: ${message}`);
   if (hint) {
     console.error(`[smoke:preflight] HINT: ${hint}`);
@@ -30,34 +44,42 @@ function parseSmokeConfig() {
   const fallbackPort = 3000;
 
   if (!host) {
-    fail(
-      'SMOKE_HOST is empty.',
-      'Set SMOKE_HOST to a valid hostname or IP, for example: SMOKE_HOST=127.0.0.1',
-    );
+    fail({
+      code: 'INVALID_SMOKE_HOST',
+      message: 'SMOKE_HOST is empty.',
+      hint: 'Set SMOKE_HOST to a valid hostname or IP, for example: SMOKE_HOST=127.0.0.1',
+      fields: { reason: 'empty' },
+    });
   }
 
   if (/\s/.test(host)) {
-    fail(
-      `SMOKE_HOST has whitespace: "${host}".`,
-      'Use a plain hostname or IP with no spaces, for example: SMOKE_HOST=0.0.0.0',
-    );
+    fail({
+      code: 'INVALID_SMOKE_HOST',
+      message: `SMOKE_HOST has whitespace: "${host}".`,
+      hint: 'Use a plain hostname or IP with no spaces, for example: SMOKE_HOST=0.0.0.0',
+      fields: { reason: 'whitespace', host },
+    });
   }
 
   const parsedPort = Number.parseInt(portRaw ?? '', 10);
   const port = Number.isInteger(parsedPort) && parsedPort > 0 ? parsedPort : fallbackPort;
 
   if (portRaw !== undefined && (!Number.isInteger(parsedPort) || parsedPort < 1 || parsedPort > 65535)) {
-    fail(
-      `SMOKE_PORT must be an integer from 1-65535, received: "${portRaw}".`,
-      `Unset SMOKE_PORT to use ${fallbackPort}, or provide a valid port like SMOKE_PORT=4173.`,
-    );
+    fail({
+      code: 'INVALID_SMOKE_PORT',
+      message: `SMOKE_PORT must be an integer from 1-65535, received: "${portRaw}".`,
+      hint: `Unset SMOKE_PORT to use ${fallbackPort}, or provide a valid port like SMOKE_PORT=4173.`,
+      fields: { port_raw: portRaw },
+    });
   }
 
   if (!PREFLIGHT_MODES.has(preflightMode)) {
-    fail(
-      `SMOKE_PREFLIGHT_MODE must be one of: ${Array.from(PREFLIGHT_MODES).join(', ')}. Received: "${preflightMode}".`,
-      'Use listen (default), check (existing server only), or skip (non-listening mode).',
-    );
+    fail({
+      code: 'INVALID_PREFLIGHT_MODE',
+      message: `SMOKE_PREFLIGHT_MODE must be one of: ${Array.from(PREFLIGHT_MODES).join(', ')}. Received: "${preflightMode}".`,
+      hint: 'Use listen (default), check (existing server only), or skip (non-listening mode).',
+      fields: { mode: preflightMode },
+    });
   }
 
   return { host, port, preflightMode, baseUrl: `http://${host}:${port}` };
@@ -66,29 +88,35 @@ function parseSmokeConfig() {
 function ensureNodeVersion() {
   const major = Number.parseInt(process.versions.node.split('.')[0] ?? '', 10);
   if (!Number.isInteger(major) || major < MIN_NODE_MAJOR) {
-    fail(
-      `Node.js ${process.versions.node} detected, but smoke tests require Node.js ${MIN_NODE_MAJOR}+.`,
-      `Use Node.js ${MIN_NODE_MAJOR}+ (for example via nvm), then reinstall dependencies with npm ci.`,
-    );
+    fail({
+      code: 'NODE_VERSION_UNSUPPORTED',
+      message: `Node.js ${process.versions.node} detected, but smoke tests require Node.js ${MIN_NODE_MAJOR}+.`,
+      hint: `Use Node.js ${MIN_NODE_MAJOR}+ (for example via nvm), then reinstall dependencies with npm ci.`,
+      fields: { detected_version: process.versions.node, min_major: MIN_NODE_MAJOR },
+    });
   }
 }
 
 function ensureCommand(command, args = ['--version']) {
   const result = spawnSync(command, args, { stdio: 'pipe', encoding: 'utf-8' });
   if (result.error || result.status !== 0) {
-    fail(
-      `Required tool "${command}" is unavailable.`,
-      `Install ${command} and ensure it is on PATH, then retry npm run test:smoke.`,
-    );
+    fail({
+      code: 'REQUIRED_TOOL_UNAVAILABLE',
+      message: `Required tool "${command}" is unavailable.`,
+      hint: `Install ${command} and ensure it is on PATH, then retry npm run test:smoke.`,
+      fields: { tool: command },
+    });
   }
 }
 
 function ensureDependencyInstalled(packagePath, label) {
   if (!existsSync(resolve(process.cwd(), packagePath))) {
-    fail(
-      `Missing dependency: ${label}.`,
-      'Run npm ci (or npm install) before running smoke tests.',
-    );
+    fail({
+      code: 'DEPENDENCY_MISSING',
+      message: `Missing dependency: ${label}.`,
+      hint: 'Run npm ci (or npm install) before running smoke tests.',
+      fields: { dependency: label, dependency_path: packagePath },
+    });
   }
 }
 
@@ -133,10 +161,11 @@ function ensureCleanWorktree() {
   });
 
   if (result.error || result.status !== 0) {
-    fail(
-      'Unable to inspect git worktree state before smoke run.',
-      'Ensure git is installed and run smoke preflight from the repository root.',
-    );
+    fail({
+      code: 'WORKTREE_STATUS_UNAVAILABLE',
+      message: 'Unable to inspect git worktree state before smoke run.',
+      hint: 'Ensure git is installed and run smoke preflight from the repository root.',
+    });
   }
 
   const lines = result.stdout
@@ -160,10 +189,17 @@ function ensureCleanWorktree() {
   const preview = lines.slice(0, 8).join('\n');
   const remainder = lines.length > 8 ? `\n...and ${lines.length - 8} more` : '';
 
-  fail(
-    `Dirty worktree detected (${summaryParts.join(', ')}). Smoke preflight requires a clean repository state.`,
-    `Commit/stash/discard local changes (including untracked files), then retry.\nInspect with: git status --short\n\nCurrent changes:\n${preview}${remainder}`,
-  );
+  fail({
+    code: 'WORKTREE_DIRTY',
+    message: `Dirty worktree detected (${summaryParts.join(', ')}). Smoke preflight requires a clean repository state.`,
+    hint: `Commit/stash/discard local changes (including untracked files), then retry.\nInspect with: git status --short\n\nCurrent changes:\n${preview}${remainder}`,
+    fields: {
+      modified: summary.modified,
+      deleted: summary.deleted,
+      untracked: summary.untracked,
+      other: summary.other,
+    },
+  });
 }
 
 function checkUrlReady(baseUrl) {
@@ -250,10 +286,12 @@ async function assertServerStartReadiness(host, port, baseUrl) {
   if (!ready) {
     await terminateProcess(child);
     const tail = output.join('').trim().split('\n').slice(-20).join('\n');
-    fail(
-      `Unable to start and reach server at ${baseUrl} within ${Math.floor(START_TIMEOUT_MS / 1000)}s.`,
-      `${tail || 'No startup logs captured.'}\nFix host/port conflicts or Next startup errors, then retry.`,
-    );
+    fail({
+      code: 'SERVER_START_TIMEOUT',
+      message: `Unable to start and reach server at ${baseUrl} within ${Math.floor(START_TIMEOUT_MS / 1000)}s.`,
+      hint: `${tail || 'No startup logs captured.'}\nFix host/port conflicts or Next startup errors, then retry.`,
+      fields: { base_url: baseUrl, timeout_seconds: Math.floor(START_TIMEOUT_MS / 1000) },
+    });
   }
 
   await terminateProcess(child);
@@ -269,10 +307,12 @@ async function assertServerReadiness({ host, port, baseUrl, preflightMode }) {
   if (preflightMode === 'check') {
     const ready = await checkUrlReady(baseUrl);
     if (!ready) {
-      fail(
-        `SMOKE_PREFLIGHT_MODE=check requires an existing server at ${baseUrl}, but none responded.`,
-        'Start a server manually, or switch to SMOKE_PREFLIGHT_MODE=listen (default) where preflight starts Next.js automatically.',
-      );
+      fail({
+        code: 'SERVER_NOT_REACHABLE',
+        message: `SMOKE_PREFLIGHT_MODE=check requires an existing server at ${baseUrl}, but none responded.`,
+        hint: 'Start a server manually, or switch to SMOKE_PREFLIGHT_MODE=listen (default) where preflight starts Next.js automatically.',
+        fields: { base_url: baseUrl, mode: preflightMode },
+      });
     }
 
     log(`SMOKE_PREFLIGHT_MODE=check confirmed existing server at ${baseUrl}.`);
@@ -301,5 +341,9 @@ async function main() {
 }
 
 main().catch(error => {
-  fail(`Unexpected preflight failure: ${error?.message ?? String(error)}`);
+  fail({
+    code: 'UNEXPECTED_FAILURE',
+    message: `Unexpected preflight failure: ${error?.message ?? String(error)}`,
+    fields: { error_name: error?.name ?? 'Error' },
+  });
 });
