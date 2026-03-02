@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useSwarmStore } from '@/core/store';
 import { BUILDING_CONFIGS } from '@/core/types';
 import DocsPanel from '@/components/DocsPanel';
@@ -29,14 +30,31 @@ const statusLabels: Record<string, string> = {
 
 export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
   const agents = useSwarmStore(s => s.agents);
+  const autonomous = useSwarmStore(s => s.autonomous);
   const currentTask = useSwarmStore(s => s.currentTask);
   const notifications = useSwarmStore(s => s.notifications);
   const economy = useSwarmStore(s => s.economy);
   const decompositionStatus = useSwarmStore(s => s.decompositionStatus);
+  const fetchAgentStatuses = useSwarmStore(s => s.fetchAgentStatuses);
   const selectAgent = useSwarmStore(s => s.selectAgent);
   const dismissNotification = useSwarmStore(s => s.dismissNotification);
 
   const unread = notifications.filter(n => !n.read);
+
+  useEffect(() => {
+    if (!autonomous.enabled) return;
+
+    void fetchAgentStatuses().catch((error) => {
+      console.error('[Sidebar] agent status poll failed', error);
+    });
+    const timer = window.setInterval(() => {
+      void fetchAgentStatuses().catch((error) => {
+        console.error('[Sidebar] agent status poll failed', error);
+      });
+    }, 3000);
+
+    return () => window.clearInterval(timer);
+  }, [autonomous.enabled, fetchAgentStatuses]);
 
   return (
     <div className="w-80 bg-[#0d1117] border-l border-[#1e2a3a] flex flex-col overflow-hidden h-full">

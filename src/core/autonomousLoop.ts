@@ -1,15 +1,17 @@
 import path from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType, type LinearIssue } from './linearServer';
 import {
   cleanupAutonomousBranchesForClosedIssues,
   cleanupStaleAutonomousWorktrees,
   detectRetryKind,
-  executeAutonomousTaskWithCodex,
   hasActiveCodexProcess,
   runAutonomousPreflight,
   runCodexExec,
 } from './orchestrator';
+import { AgentRole } from './types';
+import { clearAllStatuses, setAgentLastOutput, setAgentStatus } from './agentRegistry';
 
 type AutonomousEventType = 'info' | 'error' | 'warning';
 
@@ -201,6 +203,74 @@ function normalizePriority(raw: unknown): 'P2' | 'P3' {
   return text.includes('P2') ? 'P2' : 'P3';
 }
 
+type PipelineRole = Extract<AgentRole, 'engineer' | 'designer' | 'qa' | 'reviewer' | 'researcher'>;
+
+type PipelineSubtask = {
+  title: string;
+  description: string;
+  role: PipelineRole;
+};
+
+const PIPELINE_ROLES = new Set<PipelineRole>(['engineer', 'designer', 'qa', 'reviewer', 'researcher']);
+
+function isPipelineRole(value: unknown): value is PipelineRole {
+  return typeof value === 'string' && PIPELINE_ROLES.has(value as PipelineRole);
+}
+
+function parsePipelineSubtasks(text: string): PipelineSubtask[] {
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fence?.[1]?.trim() || text;
+  const arrayMatch = candidate.match(/\[[\s\S]*\]/);
+  if (!arrayMatch) return [];
+
+  try {
+    const parsed = JSON.parse(arrayMatch[0]) as Array<{ title?: unknown; description?: unknown; role?: unknown }>;
+    return parsed
+      .map((item) => ({
+        title: String(item.title ?? '').trim(),
+        description: String(item.description ?? '').trim(),
+        role: item.role,
+      }))
+      .filter((item): item is { title: string; description: string; role: PipelineRole } =>
+        item.title.length > 0 && item.description.length > 0 && isPipelineRole(item.role),
+      );
+  } catch {
+    return [];
+  }
+}
+
+function getRoleSystemPrompt(role: PipelineRole): string {
+  switch (role) {
+    case 'engineer':
+      return 'You are Workshop (engineer role). Implement production-ready code changes in this repository.';
+    case 'designer':
+      return 'You are Studio (designer role). Improve UX/UI structure, copy, and interaction details directly in code.';
+    case 'qa':
+      return 'You are Testing Lab (qa role). Validate behavior, improve tests, and report concrete failures.';
+    case 'reviewer':
+      return 'You are Review Office (reviewer role). Review for correctness, maintainability, and edge cases, then fix issues.';
+    case 'researcher':
+      return 'You are Research Desk (researcher role). Gather context from this repository and produce actionable implementation guidance.';
+    default:
+      return 'You are a specialized agent.';
+  }
+}
+
+function runValidationBuild(workDir: string): { ok: boolean; output: string } {
+  const build = spawnSync('npm', ['run', 'build'], { cwd: workDir, encoding: 'utf8' });
+  const output = [build.stdout?.trim(), build.stderr?.trim()].filter(Boolean).join('\n').trim();
+  if (build.status === 0) {
+    return { ok: true, output: output || 'npm run build completed successfully.' };
+  }
+
+  const typecheck = spawnSync('npm', ['run', 'typecheck'], { cwd: workDir, encoding: 'utf8' });
+  const typeOutput = [typecheck.stdout?.trim(), typecheck.stderr?.trim()].filter(Boolean).join('\n').trim();
+  return {
+    ok: typecheck.status === 0,
+    output: typeOutput || output || 'Validation command failed without output.',
+  };
+}
+
 async function generateImprovements(summary: string): Promise<Array<{ title: string; description: string; priority: 'P2' | 'P3' }>> {
   const prompt = [
     'You are a reflection agent for a self-improving software system.',
@@ -386,41 +456,158 @@ async function tickLoop() {
       return;
     }
 
-    const execution = await executeAutonomousTaskWithCodex({
-      title: issue.title,
-      description: issue.description,
-      issueIdentifier: issue.identifier,
+    const model = process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex';
+    const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, model };
+
+    setAgentStatus('pm', 'working', `Decompose ${issue.identifier}`);
+    const decomposePrompt = [
+      'You are the PM/City Hall. Decompose this task into subtasks.',
+      'Return JSON array: [{title, description, role}] where role is one of: engineer, designer, qa, reviewer, researcher.',
+      'Do not include markdown or explanatory text.',
+      '',
+      `Issue Identifier: ${issue.identifier}`,
+      `Title: ${issue.title}`,
+      `Description: ${issue.description ?? '(no description provided)'}`,
+    ].join('\n');
+
+    const decomposition = await runCodexExec({
+      prompt: decomposePrompt,
       workDir: PROJECT_ROOT,
-      model: process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex',
-      preflight,
+      model,
+      sandbox: 'read-only',
+      isolatedContext: true,
     });
+    usage.inputTokens += decomposition.usage.inputTokens;
+    usage.outputTokens += decomposition.usage.outputTokens;
+    usage.totalTokens += decomposition.usage.totalTokens;
+    if (decomposition.usage.model) usage.model = decomposition.usage.model;
+    setAgentLastOutput('pm', decomposition.text.slice(-2000));
 
-    const tokenSummary = `input=${execution.usage.inputTokens.toLocaleString()}, output=${execution.usage.outputTokens.toLocaleString()}, total=${execution.usage.totalTokens.toLocaleString()}`;
-    addEvent(`[telemetry] Codex isolated context for ${issue.identifier} (${execution.usage.model}); ${tokenSummary}`);
-    if (execution.usage.totalTokens > Math.max(1, DEFAULT_EXPECTED_TOKENS_PER_TURN)) {
-      addEvent(
-        `[telemetry] Token usage exceeded expected turn budget (${execution.usage.totalTokens.toLocaleString()} > ${DEFAULT_EXPECTED_TOKENS_PER_TURN.toLocaleString()}).`,
-        'warning',
-      );
-    }
-
-    for (const restart of execution.restarts) {
-      addEvent(`[restart] ${restart}`, 'warning');
-    }
-
-    if (!execution.ok) {
-      const retryKind = detectRetryKind(execution.output);
-      if (execution.rateLimited || retryKind === 'rate_limit') {
-        const retryAfter = execution.retryAfterMs ?? DEFAULT_COOLDOWN_MS;
+    if (decomposition.code !== 0) {
+      const combined = [decomposition.stderr, decomposition.stdout, decomposition.text].filter(Boolean).join('\n');
+      const retryKind = detectRetryKind(combined);
+      if (retryKind === 'rate_limit') {
+        const retryAfter = DEFAULT_COOLDOWN_MS;
         rt.state.paused = true;
         rt.state.cooldownUntil = Date.now() + Math.max(30_000, retryAfter);
-        rt.state.pauseReason = 'All providers are rate-limited. Waiting for cooldown.';
+        rt.state.pauseReason = 'Providers are rate-limited. Waiting for cooldown.';
         addEvent(`Paused autonomous loop due to rate limits for ${Math.ceil((Math.max(30_000, retryAfter)) / 1000)}s.`, 'warning');
       } else {
-        addEvent(`Execution failed for ${issue.identifier}: ${execution.output.slice(0, 240)}`, 'error');
+        addEvent(`City Hall decomposition failed for ${issue.identifier}: ${combined.slice(0, 240)}`, 'error');
       }
+      setAgentStatus('pm', 'blocked', `Decomposition failed for ${issue.identifier}`);
       await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
       return;
+    }
+
+    const subtasks = parsePipelineSubtasks(decomposition.text);
+    if (subtasks.length === 0) {
+      addEvent(`City Hall returned invalid decomposition for ${issue.identifier}.`, 'error');
+      setAgentStatus('pm', 'blocked', `Invalid decomposition output for ${issue.identifier}`);
+      await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
+      return;
+    }
+    addEvent(`City Hall decomposed ${issue.identifier} into ${subtasks.length} subtasks.`);
+
+    const subtaskOutputs: Array<{ role: PipelineRole; title: string; output: string }> = [];
+    for (const [index, subtask] of subtasks.entries()) {
+      setAgentStatus(subtask.role, 'working', subtask.title);
+      addEvent(`[dispatch] ${subtask.role} -> ${subtask.title}`);
+
+      const rolePrompt = [
+        getRoleSystemPrompt(subtask.role),
+        '',
+        'Task context:',
+        `- Issue: ${issue.identifier} ${issue.title}`,
+        `- Subtask ${index + 1}/${subtasks.length}: ${subtask.title}`,
+        `- Description: ${subtask.description}`,
+        '',
+        'Required behavior:',
+        '- Make the needed repository changes directly.',
+        '- Run targeted validation relevant to your changes.',
+        '- Return a concise summary of what changed and what was validated.',
+      ].join('\n');
+
+      const result = await runCodexExec({
+        prompt: rolePrompt,
+        workDir: PROJECT_ROOT,
+        model,
+        sandbox: 'workspace-write',
+        isolatedContext: true,
+      });
+      usage.inputTokens += result.usage.inputTokens;
+      usage.outputTokens += result.usage.outputTokens;
+      usage.totalTokens += result.usage.totalTokens;
+      if (result.usage.model) usage.model = result.usage.model;
+      setAgentLastOutput(subtask.role, result.text.slice(-2000));
+
+      if (result.code !== 0) {
+        const combined = [result.stderr, result.stdout, result.text].filter(Boolean).join('\n');
+        addEvent(`${subtask.role} failed on ${issue.identifier}: ${combined.slice(0, 240)}`, 'error');
+        setAgentStatus(subtask.role, 'blocked', subtask.title);
+        await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
+        return;
+      }
+
+      setAgentStatus(subtask.role, subtask.role === 'reviewer' ? 'reviewing' : 'idle', null);
+      subtaskOutputs.push({ role: subtask.role, title: subtask.title, output: result.text.slice(-4000) });
+      addEvent(`${subtask.role} completed: ${subtask.title}`);
+    }
+
+    setAgentStatus('qa', 'working', 'Validation: npm run build / typecheck');
+    const validation = runValidationBuild(PROJECT_ROOT);
+    setAgentLastOutput('qa', validation.output.slice(-2000));
+    if (!validation.ok) {
+      setAgentStatus('qa', 'blocked', 'Validation failed');
+      addEvent(`Testing Lab validation failed for ${issue.identifier}: ${validation.output.slice(0, 240)}`, 'error');
+      await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
+      return;
+    }
+    setAgentStatus('qa', 'idle', null);
+    addEvent(`Testing Lab validation passed for ${issue.identifier}.`);
+
+    setAgentStatus('pm', 'reviewing', `Summarize ${issue.identifier}`);
+    const summaryPrompt = [
+      'You are City Hall (pm role). Summarize autonomous execution results for this issue.',
+      'Keep it concise and structured as: completed subtasks, key code changes, and validation results.',
+      '',
+      `Issue: ${issue.identifier} ${issue.title}`,
+      `Issue Description: ${issue.description ?? '(no description provided)'}`,
+      '',
+      'Subtask outputs:',
+      ...subtaskOutputs.map((entry) => `- [${entry.role}] ${entry.title}\n${entry.output.slice(0, 1200)}`),
+      '',
+      'Validation output:',
+      validation.output.slice(0, 2000),
+    ].join('\n');
+
+    const summary = await runCodexExec({
+      prompt: summaryPrompt,
+      workDir: PROJECT_ROOT,
+      model,
+      sandbox: 'read-only',
+      isolatedContext: true,
+    });
+    usage.inputTokens += summary.usage.inputTokens;
+    usage.outputTokens += summary.usage.outputTokens;
+    usage.totalTokens += summary.usage.totalTokens;
+    if (summary.usage.model) usage.model = summary.usage.model;
+    setAgentLastOutput('pm', summary.text.slice(-2000));
+    if (summary.code !== 0) {
+      const combined = [summary.stderr, summary.stdout, summary.text].filter(Boolean).join('\n');
+      addEvent(`City Hall summary failed for ${issue.identifier}: ${combined.slice(0, 240)}`, 'warning');
+    }
+    setAgentStatus('pm', 'idle', null);
+
+    const summaryText = summary.text.trim() || subtaskOutputs.map((entry) => `[${entry.role}] ${entry.title}`).join('\n');
+
+    const tokenSummary = `input=${usage.inputTokens.toLocaleString()}, output=${usage.outputTokens.toLocaleString()}, total=${usage.totalTokens.toLocaleString()}`;
+    addEvent(`[telemetry] Autonomous role pipeline for ${issue.identifier} (${usage.model}); ${tokenSummary}`);
+    if (usage.totalTokens > Math.max(1, DEFAULT_EXPECTED_TOKENS_PER_TURN)) {
+      addEvent(
+        `[telemetry] Token usage exceeded expected turn budget (${usage.totalTokens.toLocaleString()} > ${DEFAULT_EXPECTED_TOKENS_PER_TURN.toLocaleString()}).`,
+        'warning',
+      );
     }
 
     const completed = await updateIssueStateByType(issue.id, 'completed', LINEAR_TEAM_ID);
@@ -438,7 +625,7 @@ async function tickLoop() {
       ...rt.state.completedTasks,
     ].slice(0, 50);
 
-    const improvements = await generateImprovements(execution.output);
+    const improvements = await generateImprovements(summaryText);
     if (improvements.length === 0) return;
 
     let generatedCount = 0;
@@ -457,6 +644,7 @@ async function tickLoop() {
       addEvent(`Generated ${generatedCount} follow-up improvement task(s).`);
     }
   } finally {
+    clearAllStatuses();
     rt.state.running = false;
     rt.state.currentTask = null;
     rt.lock = false;

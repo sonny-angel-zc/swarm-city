@@ -16,6 +16,8 @@ Swarm agents now run in dedicated git worktrees.
   - `swarm/<taskId>/<role>`
 - Per-agent setup event appears in activity feed:
   - `agent_workspace` with `worktreePath`, `branch`, `created`.
+- Per-agent PR draft metadata appears in activity feed:
+  - `agent_pr_draft` with PR title, draft path, and ready `gh pr create` command.
 
 ## Useful commands
 
@@ -30,7 +32,9 @@ git worktree list
 ## GitHub flow for parallel observable work
 
 1. Let agent/task run create worktrees automatically.
-2. For each `swarm/<task>/<role>` branch, review changes in that worktree.
+2. For each `swarm/<task>/<role>` branch, use generated metadata:
+   - Draft body file: `<worktree>/.swarm/pr-draft.md`
+   - `gh pr create` command: emitted via `agent_pr_draft`
 3. Push branch and open a PR per agent branch (or squash by task).
 4. Merge PRs in dependency order (research -> design -> engineer -> qa -> reviewer).
 5. Remove stale worktrees after merge:

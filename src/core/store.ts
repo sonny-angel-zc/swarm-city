@@ -44,6 +44,7 @@ type SSEEvent =
   | { type: 'decomposition_stalled'; taskId: string; elapsedMs: number; thresholdMs: number; reason?: string; suggestedAction?: string }
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
   | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
+  | { type: 'agent_pr_draft'; taskId: string; role: AgentRole; branch: string; title: string; draftPath: string; openCommand: string }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
@@ -122,6 +123,7 @@ type SwarmStore = {
   updateLinearIssueStatus: (issueId: string, newStatusType: string) => Promise<void>;
   setBacklogItemStatus: (id: string, status: BacklogItem['status']) => void;
   fetchAutonomousStatus: () => Promise<void>;
+  fetchAgentStatuses: () => Promise<void>;
   setAutonomousEnabled: (enabled: boolean) => Promise<void>;
 setDocsFilter: (filter: 'all' | DocCategory) => void;
   setDocsQuery: (query: string) => void;
@@ -131,6 +133,15 @@ setDocsFilter: (filter: 'all' | DocCategory) => void;
   unpinMemory: (id: string) => void;
   captureDocumentMemory: (docId: string) => void;
   clearDocumentMemory: () => void;
+};
+
+type ServerAgentStatus = 'idle' | 'working' | 'reviewing' | 'blocked';
+
+type ServerAgentState = {
+  status: ServerAgentStatus;
+  currentTask: string | null;
+  lastOutput: string | null;
+  updatedAt: number;
 };
 
 type TokenSpendMetadata = {
@@ -211,6 +222,12 @@ function resolveModelProvider(model: string | undefined): ModelProvider | null {
   if (model.startsWith('anthropic/')) return 'anthropic';
   if (model.startsWith('google/')) return 'google';
   return null;
+}
+
+function mapServerStatus(status: ServerAgentStatus): AgentStatus {
+  if (status === 'idle') return 'idle';
+  if (status === 'blocked') return 'blocked';
+  return 'working';
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -871,6 +888,21 @@ docsRegistry: getPlanRegistry(),
         break;
       }
 
+      case 'agent_pr_draft': {
+        log.push({
+          timestamp: Date.now(),
+          message: `${event.role} PR draft ready: ${event.title} (${event.draftPath})`,
+          type: 'info',
+        });
+        log.push({
+          timestamp: Date.now(),
+          message: `PR command: ${event.openCommand}`,
+          type: 'info',
+        });
+        set({ activityLog: log.slice(-100) });
+        break;
+      }
+
       case 'agent_assigned': {
         const role = event.role;
         const subtask = event.subtask;
@@ -1343,6 +1375,34 @@ docsRegistry: getPlanRegistry(),
       });
     } catch (err) {
       console.error('[fetchAutonomousStatus]', err);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  },
+  fetchAgentStatuses: async () => {
+    try {
+      const res = await fetch('/api/agents/status', { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Agent status request failed (${res.status})`);
+      const data = await res.json() as Partial<Record<AgentRole, ServerAgentState>>;
+      set(state => {
+        const nextAgents = { ...state.agents };
+        for (const role of Object.keys(nextAgents) as AgentRole[]) {
+          const remote = data[role];
+          if (!remote) continue;
+          const mappedStatus = mapServerStatus(remote.status);
+          const currentTask = remote.currentTask && remote.currentTask.trim().length > 0
+            ? remote.currentTask
+            : null;
+          nextAgents[role] = {
+            ...nextAgents[role],
+            status: mappedStatus,
+            currentTask,
+            progress: mappedStatus === 'idle' ? 0 : nextAgents[role].progress,
+          };
+        }
+        return { agents: nextAgents };
+      });
+    } catch (err) {
+      console.error('[fetchAgentStatuses]', err);
       throw err instanceof Error ? err : new Error(String(err));
     }
   },

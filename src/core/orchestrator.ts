@@ -12,6 +12,7 @@ export type SSEEvent =
   | { type: 'decomposition_start'; taskId: string }
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
   | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
+  | { type: 'agent_pr_draft'; taskId: string; role: AgentRole; branch: string; title: string; draftPath: string; openCommand: string }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
@@ -107,6 +108,9 @@ type WorktreeInfo = {
   dir: string;
   branch: string;
   created: boolean;
+  prDraftTitle: string;
+  prDraftPath: string;
+  prOpenCommand: string;
 };
 
 type AutonomousWorktreeInfo = {
@@ -144,17 +148,99 @@ function ensureAgentWorktree(taskId: string, role: AgentRole): WorktreeInfo {
   mkdirSync(path.dirname(dir), { recursive: true });
 
   if (existsSync(gitLink)) {
-    return { dir, branch, created: false };
+    const pr = createPrDraftMetadata({
+      repoRoot,
+      taskId,
+      role,
+      branch,
+      worktreeDir: dir,
+    });
+    return {
+      dir,
+      branch,
+      created: false,
+      prDraftTitle: pr.title,
+      prDraftPath: pr.draftPath,
+      prOpenCommand: pr.openCommand,
+    };
   }
 
   gitExec(repoRoot, ['worktree', 'add', '-f', '-B', branch, dir, 'HEAD']);
   gitExec(dir, ['config', 'user.email', 'agent@swarm.city']);
   gitExec(dir, ['config', 'user.name', 'Swarm Agent']);
-  return { dir, branch, created: true };
+  const pr = createPrDraftMetadata({
+    repoRoot,
+    taskId,
+    role,
+    branch,
+    worktreeDir: dir,
+  });
+  return {
+    dir,
+    branch,
+    created: true,
+    prDraftTitle: pr.title,
+    prDraftPath: pr.draftPath,
+    prOpenCommand: pr.openCommand,
+  };
 }
 
 function setupWorkDir(taskId: string, role: AgentRole): WorktreeInfo {
   return ensureAgentWorktree(taskId, role);
+}
+
+function parseGitHubRepoSlug(remoteUrl: string): string | null {
+  const trimmed = remoteUrl.trim();
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (sshMatch) return sshMatch[1];
+  const httpsMatch = trimmed.match(/^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/);
+  if (httpsMatch) return httpsMatch[1];
+  return null;
+}
+
+function createPrDraftMetadata(params: {
+  repoRoot: string;
+  taskId: string;
+  role: AgentRole;
+  branch: string;
+  worktreeDir: string;
+}): { title: string; draftPath: string; openCommand: string } {
+  const title = `[${params.taskId}] ${params.role}: implementation draft`;
+  const draftDir = path.join(params.worktreeDir, '.swarm');
+  const draftPath = path.join(draftDir, 'pr-draft.md');
+  mkdirSync(draftDir, { recursive: true });
+
+  const body = [
+    '## Summary',
+    `- Agent role: \`${params.role}\``,
+    `- Task id: \`${params.taskId}\``,
+    `- Branch: \`${params.branch}\``,
+    '',
+    '## Validation',
+    '- [ ] Add validation notes',
+    '',
+    '## Checklist',
+    '- [ ] Scope reviewed',
+    '- [ ] Tests updated',
+    '- [ ] Risks documented',
+    '',
+    '## Notes',
+    '- Auto-generated draft scaffold.',
+  ].join('\n');
+  writeFileSync(draftPath, body, { encoding: 'utf8' });
+
+  let openCommand = `gh pr create --draft --base main --head "${params.branch}" --title "${title}" --body-file "${draftPath}"`;
+  try {
+    const remote = gitExec(params.repoRoot, ['remote', 'get-url', 'origin']);
+    const slug = parseGitHubRepoSlug(remote);
+    if (slug) {
+      openCommand = `gh pr create --repo "${slug}" --draft --base main --head "${params.branch}" --title "${title}" --body-file "${draftPath}"`;
+    }
+  } catch {
+    // Keep the local default if origin isn't configured.
+  }
+
+  return { title, draftPath, openCommand };
 }
 
 function resolveAutonomousWorktreeRoot(): string {
@@ -1179,6 +1265,15 @@ async function runPMDecomposition(
     branch: worktree.branch,
     created: worktree.created,
   });
+  emitEvent(taskId, {
+    type: 'agent_pr_draft',
+    taskId,
+    role: 'pm',
+    branch: worktree.branch,
+    title: worktree.prDraftTitle,
+    draftPath: worktree.prDraftPath,
+    openCommand: worktree.prOpenCommand,
+  });
   emitEvent(taskId, { type: 'decomposition_start', taskId });
 
   const prompt =
@@ -1259,6 +1354,15 @@ async function orchestrate(taskId: string) {
         worktreePath: worktree.dir,
         branch: worktree.branch,
         created: worktree.created,
+      });
+      emitEvent(taskId, {
+        type: 'agent_pr_draft',
+        taskId,
+        role,
+        branch: worktree.branch,
+        title: worktree.prDraftTitle,
+        draftPath: worktree.prDraftPath,
+        openCommand: worktree.prOpenCommand,
       });
 
       // Build prompt — prepend prior context
