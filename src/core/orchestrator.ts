@@ -40,6 +40,33 @@ if (!globalForTasks.__swarmTaskStates) {
 }
 const taskStates = globalForTasks.__swarmTaskStates;
 
+const globalForCodex = globalThis as unknown as { __swarmActiveCodexCount?: number };
+if (typeof globalForCodex.__swarmActiveCodexCount !== 'number') {
+  globalForCodex.__swarmActiveCodexCount = 0;
+}
+
+function incrementActiveCodexCount() {
+  globalForCodex.__swarmActiveCodexCount = (globalForCodex.__swarmActiveCodexCount ?? 0) + 1;
+}
+
+function decrementActiveCodexCount() {
+  const next = (globalForCodex.__swarmActiveCodexCount ?? 0) - 1;
+  globalForCodex.__swarmActiveCodexCount = next > 0 ? next : 0;
+}
+
+export function hasActiveCodexProcess(): boolean {
+  const inProcessCount = globalForCodex.__swarmActiveCodexCount ?? 0;
+  if (inProcessCount > 0) return true;
+
+  try {
+    const out = execSync('ps -axo command', { encoding: 'utf8' });
+    const lines = out.split('\n').map((line) => line.trim()).filter(Boolean);
+    return lines.some((line) => /\bcodex(\s|$)/i.test(line));
+  } catch {
+    return false;
+  }
+}
+
 // ─── Agent config ─────────────────────────────────────────────────────────────
 
 // Sequential execution order (PM runs first for decomposition, then these in order)
@@ -300,6 +327,14 @@ function runOpenAIAgent(
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    incrementActiveCodexCount();
+    let finalized = false;
+
+    const finalize = () => {
+      if (finalized) return;
+      finalized = true;
+      decrementActiveCodexCount();
+    };
 
     let stdout = '';
     let stderr = '';
@@ -307,6 +342,7 @@ function runOpenAIAgent(
     proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
 
     proc.on('close', (code) => {
+      finalize();
       const lines = stdout
         .split('\n')
         .map((line) => line.trim())
@@ -343,6 +379,7 @@ function runOpenAIAgent(
     });
 
     proc.on('error', (err) => {
+      finalize();
       reject(new Error(`failed to launch codex CLI: ${String(err)}`));
     });
   });
@@ -381,13 +418,25 @@ export async function runCodexExec(params: {
       env: { ...process.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    incrementActiveCodexCount();
+    let finalized = false;
+
+    const finalize = () => {
+      if (finalized) return;
+      finalized = true;
+      decrementActiveCodexCount();
+    };
 
     let stdout = '';
     let stderr = '';
     proc.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
     proc.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
-    proc.on('error', (err) => reject(new Error(`failed to launch codex CLI: ${String(err)}`)));
+    proc.on('error', (err) => {
+      finalize();
+      reject(new Error(`failed to launch codex CLI: ${String(err)}`));
+    });
     proc.on('close', (code) => {
+      finalize();
       const lines = stdout
         .split('\n')
         .map((line) => line.trim())

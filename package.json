@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack -p 3000",
+    "start:supervised": "node scripts/supervise-dev-server.mjs",
     "build": "next build",
     "start": "next start"
   },
