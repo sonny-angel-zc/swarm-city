@@ -26,3 +26,15 @@
   - `SWARM_REQUESTS_PER_MIN`
   - `SWARM_CONTEXT_WINDOW`
   - `SWARM_PLAN`
+
+## OpenClaw Codex Adapter
+
+- Codex launches support explicit OpenClaw agent-id mapping (no hardcoded local machine id).
+- Mapping fallback order:
+  - `SWARM_CODEX_AGENT_ID_<ROLE>` (role-specific)
+  - `SWARM_CODEX_AGENT_MAP` role key
+  - `SWARM_CODEX_AGENT_MAP.default`
+  - `SWARM_CODEX_AGENT_ID`
+  - `OPENCLAW_CODEX_AGENT_ID` (legacy fallback)
+  - Provider default behavior when none are configured
+- Startup warning is emitted when mapping is missing or malformed.

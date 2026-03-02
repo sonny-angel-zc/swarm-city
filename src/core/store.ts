@@ -3,7 +3,7 @@ import {
   Agent, AgentRole, AgentStatus, Task, SubTask, Vehicle, Notification,
   LogEntry, BUILDING_CONFIGS, Particle, OverlayMode,
   TokenEconomy, AgentBudget, Transaction, TransactionType, EconomyHistoryPoint,
-  TelemetryState, BacklogItem, LinearSyncState,
+  TelemetryState, BacklogItem, LinearSyncState, DecompositionStatus, ModelProvider,
   AutonomousStatus,
 } from './types';
 import {
@@ -41,7 +41,9 @@ import {
 type SSEEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'decomposition_start'; taskId: string }
+  | { type: 'decomposition_stalled'; taskId: string; elapsedMs: number; thresholdMs: number; reason?: string; suggestedAction?: string }
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
+  | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
@@ -66,6 +68,7 @@ type SwarmStore = {
   // UI
   selectedAgent: AgentRole | null;
   activityLog: LogEntry[];
+  decompositionStatus: DecompositionStatus;
   // Camera
   cameraX: number;
   cameraY: number;
@@ -100,7 +103,7 @@ type SwarmStore = {
   selectAgent: (role: AgentRole | null) => void;
   setOverlayMode: (mode: OverlayMode) => void;
   setModelPreset: (preset: ModelPreset) => void;
-  submitTask: (title: string) => void;
+  submitTask: (title: string) => Promise<void>;
   deploySwarm: (backlogItemId: string) => Promise<void>;
   resumeTask: (taskId: string) => Promise<void>;
   tick: (dt: number) => void;
@@ -109,11 +112,11 @@ type SwarmStore = {
   setZoom: (z: number) => void;
   dismissNotification: (id: string) => void;
   processSSEEvent: (event: SSEEvent) => void;
-  spendTokens: (role: AgentRole, amount: number, type: TransactionType) => void;
+  spendTokens: (role: AgentRole, amount: number, type: TransactionType, metadata?: TokenSpendMetadata) => void;
   setAgentBudget: (role: AgentRole, budget: number) => void;
   setBudgetPanelOpen: (open: boolean) => void;
-fetchLimits: () => Promise<void>;
-syncBacklog: () => Promise<void>;
+  fetchLimits: () => Promise<void>;
+  syncBacklog: () => Promise<void>;
   syncLinear: () => Promise<void>;
   createLinearIssue: (title: string, description?: string, priority?: number) => Promise<void>;
   updateLinearIssueStatus: (issueId: string, newStatusType: string) => Promise<void>;
@@ -128,6 +131,14 @@ setDocsFilter: (filter: 'all' | DocCategory) => void;
   unpinMemory: (id: string) => void;
   captureDocumentMemory: (docId: string) => void;
   clearDocumentMemory: () => void;
+};
+
+type TokenSpendMetadata = {
+  inputTokens?: number;
+  outputTokens?: number;
+  model?: string;
+  provider?: ModelProvider;
+  costUsd?: number;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -157,6 +168,8 @@ let transactionIdCounter = 0;
 let telemetryIdCounter = 0;
 let lastHistoryTime = 0;
 let memoryIdCounter = 0;
+const DEFAULT_DECOMPOSITION_STALL_THRESHOLD_MS = 30_000;
+const DEFAULT_BUDGET_ALERT_THRESHOLDS = [0.5, 0.75, 0.9, 1];
 
 function createInitialEconomy(): TokenEconomy {
   const agentBudgets: Partial<Record<AgentRole, AgentBudget>> = {};
@@ -172,10 +185,32 @@ function createInitialEconomy(): TokenEconomy {
     spent: 0,
     income: 0,
     expenses: 0,
+    budgetAlertThresholds: [...DEFAULT_BUDGET_ALERT_THRESHOLDS],
+    triggeredBudgetAlerts: [],
     transactions: [],
     history: [],
     agentBudgets: agentBudgets as Record<AgentRole, AgentBudget>,
   };
+}
+
+function createInitialDecompositionStatus(): DecompositionStatus {
+  return {
+    startedAt: null,
+    elapsedMs: 0,
+    stallThresholdMs: DEFAULT_DECOMPOSITION_STALL_THRESHOLD_MS,
+    stalled: false,
+    stallReason: null,
+    suggestedAction: 'Retry deploy. If it repeats, switch model preset to force provider fallback.',
+    warningLogged: false,
+  };
+}
+
+function resolveModelProvider(model: string | undefined): ModelProvider | null {
+  if (!model) return null;
+  if (model.startsWith('openai/')) return 'openai';
+  if (model.startsWith('anthropic/')) return 'anthropic';
+  if (model.startsWith('google/')) return 'google';
+  return null;
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
@@ -190,6 +225,7 @@ export const useSwarmStore = create<SwarmStore>((set, get) => ({
   notifications: [],
   selectedAgent: null,
   activityLog: [],
+  decompositionStatus: createInitialDecompositionStatus(),
   cameraX: 0,
   cameraY: 0,
   zoom: 1,
@@ -301,15 +337,16 @@ docsRegistry: getPlanRegistry(),
     set({ economy });
   },
 
-  spendTokens: (role, amount, type) => {
+  spendTokens: (role, amount, type, metadata) => {
     const state = get();
     const economy = { ...state.economy };
+    const now = Date.now();
     const tx: Transaction = {
       id: `tx-${transactionIdCounter++}`,
       agentRole: role,
       amount,
       type,
-      timestamp: Date.now(),
+      timestamp: now,
     };
     economy.spent += amount;
     economy.expenses += amount;
@@ -323,20 +360,62 @@ docsRegistry: getPlanRegistry(),
     };
 
     const modelInfo = pickModelForRole(role, telemetryIdCounter);
-    const outputTokens = Math.max(1, amount);
-    const inputTokens = Math.max(1, Math.round(outputTokens * (type === 'tool_use' ? 0.7 : 0.45)));
+    const outputTokens = Math.max(1, Math.round(metadata?.outputTokens ?? amount));
+    const inputTokens = Math.max(1, Math.round(
+      metadata?.inputTokens ?? (outputTokens * (type === 'tool_use' ? 0.7 : 0.45)),
+    ));
+    const resolvedProvider = metadata?.provider ?? resolveModelProvider(metadata?.model) ?? modelInfo.provider;
+    const resolvedModel = metadata?.model ?? modelInfo.model;
     const telemetryEvent = buildTelemetryEvent({
       id: `te-${telemetryIdCounter++}`,
       role,
-      provider: modelInfo.provider,
-      model: modelInfo.model,
+      provider: resolvedProvider,
+      model: resolvedModel,
       kind: modelInfo.kind,
-      timestamp: Date.now(),
+      timestamp: now,
       inputTokens,
       outputTokens,
       transactionType: type,
+      estimatedCostUsd: metadata?.costUsd,
     });
     const telemetry = updateTelemetryState(state.telemetry, telemetryEvent);
+
+    const spentPct = economy.totalBudget > 0 ? economy.spent / economy.totalBudget : 0;
+    const crossedThresholds = economy.budgetAlertThresholds
+      .filter(threshold => spentPct >= threshold && !economy.triggeredBudgetAlerts.includes(threshold))
+      .sort((a, b) => a - b);
+    if (crossedThresholds.length > 0) {
+      economy.triggeredBudgetAlerts = [...economy.triggeredBudgetAlerts, ...crossedThresholds].sort((a, b) => a - b);
+    }
+
+    const budgetAlerts: Notification[] = crossedThresholds.map((threshold) => {
+      const pct = Math.round(threshold * 100);
+      const spent = economy.spent.toLocaleString();
+      const total = economy.totalBudget.toLocaleString();
+      const summary = threshold >= 1
+        ? `Budget exhausted: ${spent}/${total} tokens used.`
+        : `Budget alert: ${pct}% threshold reached (${spent}/${total} tokens).`;
+      return {
+        id: `notif-${notifIdCounter++}`,
+        agentRole: 'pm',
+        message: summary,
+        type: 'warning',
+        timestamp: now,
+        read: false,
+      };
+    });
+
+    const budgetLogEntries: LogEntry[] = crossedThresholds.map((threshold) => {
+      const pct = Math.round(Math.min(100, threshold * 100));
+      const msg = threshold >= 1
+        ? 'Budget exhausted: token spend reached 100% of runtime limit.'
+        : `Budget warning: token spend crossed ${pct}% of runtime limit.`;
+      return {
+        timestamp: now,
+        message: msg,
+        type: threshold >= 1 ? 'error' : 'info',
+      };
+    });
 
     // Spawn coin particles from the agent's building
     const agent = state.agents[role];
@@ -363,6 +442,8 @@ docsRegistry: getPlanRegistry(),
       economy,
       telemetry,
       particles: [...state.particles, ...coinParticles],
+      notifications: [...state.notifications, ...budgetAlerts],
+      activityLog: [...state.activityLog, ...budgetLogEntries].slice(-100),
     });
   },
 
@@ -385,13 +466,16 @@ docsRegistry: getPlanRegistry(),
           { timestamp: Date.now(), message: `Failed to create task: ${err}`, type: 'error' } as LogEntry,
         ].slice(-100),
       }));
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
 
   deploySwarm: async (backlogItemId: string) => {
     const state = get();
     const backlogItem = state.backlog.find(item => item.id === backlogItemId);
-    if (!backlogItem) return;
+    if (!backlogItem) {
+      throw new Error(`Backlog item ${backlogItemId} not found.`);
+    }
 
     // Close any existing SSE connection
     const prev = state.eventSource;
@@ -410,6 +494,7 @@ docsRegistry: getPlanRegistry(),
       agents: createAgents(),
       economy: freshEconomy,
       telemetry: createInitialTelemetryState(),
+      decompositionStatus: createInitialDecompositionStatus(),
     });
     lastHistoryTime = 0;
 
@@ -613,6 +698,7 @@ docsRegistry: getPlanRegistry(),
           { timestamp: Date.now(), message: `Failed to deploy swarm: ${err}`, type: 'error' } as LogEntry,
         ].slice(-100),
       }));
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
 
@@ -668,6 +754,7 @@ docsRegistry: getPlanRegistry(),
     const log = [...state.activityLog];
     const notifications = [...state.notifications];
     const vehicles = [...state.vehicles];
+    const now = Date.now();
 
     switch (event.type) {
       case 'task_created': {
@@ -680,12 +767,63 @@ docsRegistry: getPlanRegistry(),
           progress: 0,
           log: [
             ...agents.pm.log,
-            { timestamp: Date.now(), message: `Received task: "${task.title}"`, type: 'info' },
-            { timestamp: Date.now(), message: 'Decomposing into subtasks...', type: 'info' },
+            { timestamp: now, message: `Received task: "${task.title}"`, type: 'info' },
+            { timestamp: now, message: 'Decomposing into subtasks...', type: 'info' },
           ],
         };
-        log.push({ timestamp: Date.now(), message: `PM is decomposing: "${task.title}"`, type: 'info' });
-        set({ currentTask: task, agents, activityLog: log.slice(-100) });
+        log.push({ timestamp: now, message: `PM is decomposing: "${task.title}"`, type: 'info' });
+        set({
+          currentTask: task,
+          agents,
+          activityLog: log.slice(-100),
+          decompositionStatus: {
+            ...createInitialDecompositionStatus(),
+            startedAt: task.createdAt || now,
+          },
+        });
+        break;
+      }
+
+      case 'decomposition_start': {
+        const current = state.decompositionStatus;
+        set({
+          decompositionStatus: {
+            ...current,
+            startedAt: now,
+            elapsedMs: 0,
+            stalled: false,
+            stallReason: null,
+            warningLogged: false,
+          },
+        });
+        break;
+      }
+
+      case 'decomposition_stalled': {
+        const prior = state.decompositionStatus;
+        const reason = event.reason ?? state.lastFallbackReason ?? null;
+        const suggestedAction = event.suggestedAction ?? prior.suggestedAction;
+        if (!prior.warningLogged) {
+          const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+          log.push({
+            timestamp: now,
+            message: `Decomposition stall detected after ${Math.max(1, Math.round(event.elapsedMs / 1000))}s (threshold ${Math.round(event.thresholdMs / 1000)}s).${reasonSuffix}`,
+            type: 'error',
+          });
+        }
+        set({
+          activityLog: log.slice(-100),
+          decompositionStatus: {
+            ...prior,
+            startedAt: prior.startedAt ?? now - event.elapsedMs,
+            elapsedMs: event.elapsedMs,
+            stallThresholdMs: event.thresholdMs,
+            stalled: true,
+            stallReason: reason,
+            suggestedAction,
+            warningLogged: true,
+          },
+        });
         break;
       }
 
@@ -700,19 +838,36 @@ docsRegistry: getPlanRegistry(),
           progress: 0.1,
           log: [
             ...agents.pm.log,
-            { timestamp: Date.now(), message: `Decomposed into ${event.subtasks.length} subtasks`, type: 'output' },
+            { timestamp: now, message: `Decomposed into ${event.subtasks.length} subtasks`, type: 'output' },
           ],
         };
-        log.push({ timestamp: Date.now(), message: `PM decomposed task into ${event.subtasks.length} subtasks`, type: 'info' });
+        log.push({ timestamp: now, message: `PM decomposed task into ${event.subtasks.length} subtasks`, type: 'info' });
         notifications.push({
           id: `notif-${notifIdCounter++}`,
           agentRole: 'pm',
           message: `Decomposition complete — ${event.subtasks.length} subtasks`,
           type: 'info',
-          timestamp: Date.now(),
+          timestamp: now,
           read: false,
         });
-        set({ currentTask: updatedTask, agents, activityLog: log.slice(-100), notifications });
+        set({
+          currentTask: updatedTask,
+          agents,
+          activityLog: log.slice(-100),
+          notifications,
+          decompositionStatus: createInitialDecompositionStatus(),
+        });
+        break;
+      }
+
+      case 'agent_workspace': {
+        const mode = event.created ? 'created' : 'reused';
+        log.push({
+          timestamp: Date.now(),
+          message: `${event.role} ${mode} worktree ${event.branch} @ ${event.worktreePath}`,
+          type: 'info',
+        });
+        set({ activityLog: log.slice(-100) });
         break;
       }
 
@@ -898,7 +1053,12 @@ docsRegistry: getPlanRegistry(),
         const totalTokens = u.inputTokens + u.outputTokens + u.cacheCreateTokens;
 
         // Update economy with real token usage
-        get().spendTokens(role, totalTokens, 'api_call');
+        get().spendTokens(role, totalTokens, 'api_call', {
+          inputTokens: u.inputTokens + u.cacheCreateTokens,
+          outputTokens: u.outputTokens,
+          model: u.model,
+          costUsd: u.costUsd,
+        });
 
         // Log real cost
         const agents2 = { ...state.agents };
@@ -992,7 +1152,15 @@ docsRegistry: getPlanRegistry(),
         if (es) es.close();
         try { localStorage.removeItem('swarm:lastTaskId'); } catch {}
 
-        set({ agents, notifications, activityLog: log.slice(-100), eventSource: null, currentTaskId: null, backlog: updatedBacklog });
+        set({
+          agents,
+          notifications,
+          activityLog: log.slice(-100),
+          eventSource: null,
+          currentTaskId: null,
+          backlog: updatedBacklog,
+          decompositionStatus: createInitialDecompositionStatus(),
+        });
         break;
       }
     }
@@ -1013,13 +1181,17 @@ docsRegistry: getPlanRegistry(),
     const taskId = state.currentTaskId;
     if (taskId) {
       try {
-        await fetch(`/api/agents/${agentRole}/message`, {
+        const res = await fetch(`/api/agents/${agentRole}/message`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ taskId, message }),
         });
+        if (!res.ok) {
+          throw new Error(`Message send failed (${res.status})`);
+        }
       } catch (err) {
         console.error('[sendMessage] Failed:', err);
+        throw err instanceof Error ? err : new Error(String(err));
       }
     }
   },
@@ -1031,12 +1203,17 @@ docsRegistry: getPlanRegistry(),
   fetchLimits: async () => {
     try {
       const res = await fetch('/api/limits');
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`Limits request failed (${res.status})`);
       const data = await res.json();
       const tokensPerMin = data.tokensPerMin ?? 50000;
       // Set total budget to tokens-per-minute (the rate limit ceiling)
       set(state => {
-        const economy = { ...state.economy, totalBudget: tokensPerMin };
+        const economy = {
+          ...state.economy,
+          totalBudget: tokensPerMin,
+          triggeredBudgetAlerts: [],
+          budgetAlertThresholds: [...DEFAULT_BUDGET_ALERT_THRESHOLDS],
+        };
         // Also set per-agent budgets proportionally
         const perAgent = Math.floor(tokensPerMin / 7);
         const agentBudgets = { ...economy.agentBudgets };
@@ -1054,6 +1231,7 @@ docsRegistry: getPlanRegistry(),
       });
     } catch (err) {
       console.error('[fetchLimits]', err);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
   syncBacklog: async () => {
@@ -1074,18 +1252,20 @@ docsRegistry: getPlanRegistry(),
         },
       });
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       set(state => ({
         linear: {
           ...state.linear,
           syncing: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: message,
         },
       }));
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
   syncLinear: async () => {
     // Alias for syncBacklog
-    get().syncBacklog();
+    await get().syncBacklog();
   },
   createLinearIssue: async (title: string, description?: string, priority?: number) => {
     try {
@@ -1096,11 +1276,13 @@ docsRegistry: getPlanRegistry(),
         }));
       }
       // Re-sync to get server state
-      get().syncBacklog();
+      await get().syncBacklog();
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       set(state => ({
-        linear: { ...state.linear, error: err instanceof Error ? err.message : String(err) },
+        linear: { ...state.linear, error: message },
       }));
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
   updateLinearIssueStatus: async (issueId: string, newStatusType: string) => {
@@ -1108,12 +1290,14 @@ docsRegistry: getPlanRegistry(),
       const success = await updateLinearIssueStatusApi(issueId, newStatusType);
       if (success) {
         // Re-sync to get updated state from Linear
-        get().syncBacklog();
+        await get().syncBacklog();
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
       set(state => ({
-        linear: { ...state.linear, error: err instanceof Error ? err.message : String(err) },
+        linear: { ...state.linear, error: message },
       }));
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
   setBacklogItemStatus: (id, status) => {
@@ -1130,7 +1314,7 @@ docsRegistry: getPlanRegistry(),
       const since = get().autonomous.lastEventId;
       const url = since > 0 ? `/api/autonomous?since=${since}` : '/api/autonomous';
       const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`Autonomous status request failed (${res.status})`);
       const data = await res.json() as AutonomousStatus;
       const incoming = Array.isArray(data.events) ? data.events : [];
       set(state => {
@@ -1159,6 +1343,7 @@ docsRegistry: getPlanRegistry(),
       });
     } catch (err) {
       console.error('[fetchAutonomousStatus]', err);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
   setAutonomousEnabled: async (enabled: boolean) => {
@@ -1168,7 +1353,7 @@ docsRegistry: getPlanRegistry(),
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled }),
       });
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`Autonomous toggle failed (${res.status})`);
       set(state => ({
         autonomous: {
           ...state.autonomous,
@@ -1178,6 +1363,7 @@ docsRegistry: getPlanRegistry(),
       await get().fetchAutonomousStatus();
     } catch (err) {
       console.error('[setAutonomousEnabled]', err);
+      throw err instanceof Error ? err : new Error(String(err));
     }
   },
 
@@ -1259,13 +1445,49 @@ docsRegistry: getPlanRegistry(),
 
     const providerHealth = recoverProviderHealth(state.providerHealth, now);
     const providerHealthChanged = providerHealth !== state.providerHealth;
+    const decompositionStatus = state.decompositionStatus;
+    const isDecomposing = state.currentTask?.status === 'decomposing' && decompositionStatus.startedAt !== null;
+    let nextDecompositionStatus = decompositionStatus;
+    let nextActivityLog: LogEntry[] | null = null;
+
+    if (isDecomposing && decompositionStatus.startedAt !== null) {
+      const elapsedMs = Math.max(0, now - decompositionStatus.startedAt);
+      const elapsedChanged = Math.floor(elapsedMs / 1000) !== Math.floor(decompositionStatus.elapsedMs / 1000);
+      const crossedThreshold = elapsedMs >= decompositionStatus.stallThresholdMs;
+      if (crossedThreshold && !decompositionStatus.stalled) {
+        const reason = state.lastFallbackReason;
+        const reasonSuffix = reason ? ` Reason: ${reason}` : '';
+        nextActivityLog = [
+          ...state.activityLog,
+          {
+            timestamp: now,
+            message: `Decomposition stall detected after ${Math.round(elapsedMs / 1000)}s (threshold ${Math.round(decompositionStatus.stallThresholdMs / 1000)}s).${reasonSuffix}`,
+            type: 'error',
+          } as LogEntry,
+        ].slice(-100);
+        nextDecompositionStatus = {
+          ...decompositionStatus,
+          elapsedMs,
+          stalled: true,
+          stallReason: reason ?? decompositionStatus.stallReason,
+          warningLogged: true,
+        };
+      } else if (elapsedChanged) {
+        nextDecompositionStatus = {
+          ...decompositionStatus,
+          elapsedMs,
+        };
+      }
+    }
 
     set({
       vehicles: activeVehicles,
       particles: updatedParticles,
       economy,
+      ...(nextActivityLog ? { activityLog: nextActivityLog } : {}),
       ...(providerHealthChanged ? { providerHealth } : {}),
       ...(agentsChanged ? { agents } : {}),
+      ...(nextDecompositionStatus !== decompositionStatus ? { decompositionStatus: nextDecompositionStatus } : {}),
     });
   },
 }));

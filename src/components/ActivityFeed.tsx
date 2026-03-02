@@ -6,6 +6,9 @@ export default function ActivityFeed() {
   const log = useSwarmStore(s => s.activityLog);
   const vehicles = useSwarmStore(s => s.vehicles);
   const autonomous = useSwarmStore(s => s.autonomous);
+  const telemetry = useSwarmStore(s => s.telemetry);
+  const economy = useSwarmStore(s => s.economy);
+  const spentPct = economy.totalBudget > 0 ? economy.spent / economy.totalBudget : 0;
 
   return (
     <div className="h-28 bg-[#0d1117] border-t border-[#1e2a3a] flex items-stretch overflow-hidden">
@@ -52,6 +55,16 @@ export default function ActivityFeed() {
           <div className="flex items-center justify-between">
             <span className="text-[11px] text-white/40">Auto completed</span>
             <span className="text-[11px] font-mono text-emerald-300">{autonomous.completedTasks.length}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-white/40">Cost burn</span>
+            <span className="text-[11px] font-mono text-amber-300">${telemetry.burnRatePerMinUsd.toFixed(4)}/m</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-white/40">Budget used</span>
+            <span className={`text-[11px] font-mono ${spentPct >= 0.9 ? 'text-red-300' : spentPct >= 0.75 ? 'text-orange-300' : 'text-white/50'}`}>
+              {(Math.min(100, spentPct * 100)).toFixed(1)}%
+            </span>
           </div>
         </div>
       </div>

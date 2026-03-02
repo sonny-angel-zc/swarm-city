@@ -4,20 +4,39 @@ import { useState } from 'react';
 import { useSwarmStore } from '@/core/store';
 import ProviderHealth from './ProviderHealth';
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => void }) {
   const [input, setInput] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [toggleLoading, setToggleLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const submitTask = useSwarmStore(s => s.submitTask);
   const currentTask = useSwarmStore(s => s.currentTask);
+  const decompositionStatus = useSwarmStore(s => s.decompositionStatus);
   const autonomous = useSwarmStore(s => s.autonomous);
   const setAutonomousEnabled = useSwarmStore(s => s.setAutonomousEnabled);
   const modelPreset = useSwarmStore(s => s.modelPreset);
   const setModelPreset = useSwarmStore(s => s.setModelPreset);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
-    submitTask(input.trim());
-    setInput('');
+    setActionError(null);
+    setSubmitting(true);
+    try {
+      await submitTask(input.trim());
+      setInput('');
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Task submission failed.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -37,9 +56,10 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
           />
           <button
             type="submit"
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold px-3 py-1.5 rounded-md transition-colors"
+            disabled={submitting}
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold px-3 py-1.5 rounded-md transition-colors"
           >
-            Create Task →
+            {submitting ? 'Creating...' : 'Create Task →'}
           </button>
         </div>
       </form>
@@ -55,16 +75,27 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
         </select>
       </label>
       <button
-        onClick={() => { void setAutonomousEnabled(!autonomous.enabled); }}
+        onClick={async () => {
+          setActionError(null);
+          setToggleLoading(true);
+          try {
+            await setAutonomousEnabled(!autonomous.enabled);
+          } catch (error) {
+            setActionError(error instanceof Error ? error.message : 'Failed to toggle autonomous mode.');
+          } finally {
+            setToggleLoading(false);
+          }
+        }}
+        disabled={toggleLoading}
         className={`inline-flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] border transition-colors ${
           autonomous.enabled
             ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
             : 'bg-white/5 text-white/60 border-white/15'
-        }`}
+        } disabled:opacity-60 disabled:cursor-not-allowed`}
         title="Toggle autonomous execution loop"
       >
         <span>Autonomous</span>
-        <span>{autonomous.enabled ? 'ON' : 'OFF'}</span>
+        <span>{toggleLoading ? '...' : autonomous.enabled ? 'ON' : 'OFF'}</span>
       </button>
       <button
         onClick={onToggleSidebar}
@@ -75,17 +106,26 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
         </svg>
       </button>
       {currentTask && (
-        <div className="flex items-center gap-2 text-xs">
+        <div className="flex flex-col text-xs leading-tight">
+          <div className="flex items-center gap-2">
           <span className={`inline-block w-2 h-2 rounded-full ${
             currentTask.status === 'done' ? 'bg-green-400' :
             currentTask.status === 'in_progress' ? 'bg-blue-400 animate-pulse' :
-            'bg-yellow-400 animate-pulse'
+            decompositionStatus.stalled ? 'bg-orange-400 animate-pulse' : 'bg-yellow-400 animate-pulse'
           }`} />
           <span className="text-white/50">
             {currentTask.status === 'done' ? 'Complete' :
-             currentTask.status === 'decomposing' ? 'Decomposing...' :
+             currentTask.status === 'decomposing'
+               ? `Decomposing... ${formatDuration(decompositionStatus.elapsedMs)}`
+               :
              `${currentTask.subtasks.filter(s => s.status === 'done').length}/${currentTask.subtasks.length} tasks`}
           </span>
+        </div>
+          {currentTask.status === 'decomposing' && decompositionStatus.stalled && (
+            <span className="text-[10px] text-orange-300">
+              Stalled beyond {formatDuration(decompositionStatus.stallThresholdMs)}. {decompositionStatus.suggestedAction}
+            </span>
+          )}
         </div>
       )}
       {autonomous.currentTask && (
@@ -97,6 +137,11 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
         </div>
       )}
       <ProviderHealth />
+      {actionError && (
+        <div className="hidden lg:block text-[10px] text-red-300 max-w-80 truncate" title={actionError}>
+          {actionError}
+        </div>
+      )}
     </div>
   );
 }

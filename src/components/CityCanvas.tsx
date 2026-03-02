@@ -74,7 +74,7 @@ const POWER_EDGES: PowerEdge[] = [
 ];
 
 // Decorative buildings (small filler) with sprite assignments
-type DecoBuilding = { gx: number; gy: number; h: number; color: string; sprite: string; scale: number };
+type DecoBuilding = { gx: number; gy: number; h: number; color: string; sprite: string; scale: number; alpha?: number };
 const DECO_BUILDINGS: DecoBuilding[] = [
   { gx: 1, gy: 1, h: 20, color: '#1a2744', sprite: DECO_SPRITES[0], scale: 0.7 },
   { gx: 2, gy: 1, h: 15, color: '#1c2840', sprite: DECO_SPRITES[1], scale: 0.65 },
@@ -94,6 +94,40 @@ const DECO_BUILDINGS: DecoBuilding[] = [
   { gx: 9, gy: 9, h: 15, color: '#151d30', sprite: DECO_SPRITES[3], scale: 0.5 },
   { gx: 10, gy: 10, h: 11, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
 ];
+
+// Fill empty lots so the scene reads as a denser city instead of isolated landmarks.
+const AGENT_TILES = new Set(BUILDING_CONFIGS.map(cfg => `${cfg.gridX},${cfg.gridY}`));
+const STATIC_DECO_TILES = new Set(DECO_BUILDINGS.map(d => `${d.gx},${d.gy}`));
+const DISTRICT_BUILDINGS: DecoBuilding[] = [];
+for (let gx = 0; gx < GRID_SIZE; gx++) {
+  for (let gy = 0; gy < GRID_SIZE; gy++) {
+    const key = `${gx},${gy}`;
+    if (ROAD_TILES.has(key) || PLAZA_TILES.has(key) || AGENT_TILES.has(key) || STATIC_DECO_TILES.has(key)) continue;
+
+    const seed = gx * 37 + gy * 53;
+    const nearCore = gx >= 3 && gx <= 12 && gy >= 3 && gy <= 12;
+    const placeLot = nearCore ? seed % 3 !== 0 : seed % 4 === 0;
+    if (!placeLot) continue;
+
+    const useNature = !nearCore && seed % 5 === 0;
+    const spritePool = useNature ? NATURE_SPRITES : DECO_SPRITES;
+    const sprite = spritePool[seed % spritePool.length];
+    const scale = nearCore ? 0.56 + (seed % 4) * 0.06 : 0.46 + (seed % 3) * 0.05;
+    const h = nearCore ? 11 + (seed % 6) * 3 : 9 + (seed % 4) * 3;
+    const shade = 18 + (seed % 7) * 3;
+    DISTRICT_BUILDINGS.push({
+      gx,
+      gy,
+      h,
+      color: `rgb(${shade},${shade + 8},${shade + 22})`,
+      sprite,
+      scale,
+      alpha: nearCore ? 0.82 : 0.72,
+    });
+  }
+}
+const ALL_DECO_BUILDINGS = [...DECO_BUILDINGS, ...DISTRICT_BUILDINGS]
+  .sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
 
 // ─── Fountain drawing ─────────────────────────────────────────────────────────
 
@@ -274,6 +308,73 @@ function drawFountainSpray(
     ctx.lineWidth = 1.4;
     ctx.stroke();
   }
+
+  ctx.restore();
+}
+
+function drawFountainPlazaProps(
+  ctx: CanvasRenderingContext2D,
+  time: number,
+  darkness: number,
+) {
+  const { x: cx, y: cy } = gridToScreen(7.5, 7.5);
+  const benchPoints = [
+    { x: cx, y: cy - 33, w: 16, h: 5 },
+    { x: cx + 28, y: cy, w: 12, h: 5 },
+    { x: cx, y: cy + 33, w: 16, h: 5 },
+    { x: cx - 28, y: cy, w: 12, h: 5 },
+  ];
+
+  ctx.save();
+
+  // Planters on the diagonal corners of the plaza.
+  for (const corner of [
+    gridToScreen(7, 7),
+    gridToScreen(8, 7),
+    gridToScreen(8, 8),
+    gridToScreen(7, 8),
+  ]) {
+    drawIsoBox(
+      ctx,
+      corner.x,
+      corner.y,
+      10,
+      6,
+      5,
+      '#25384a',
+      '#1a2838',
+      '#1f3040',
+      'rgba(0,0,0,0.22)',
+    );
+    ctx.beginPath();
+    ctx.ellipse(corner.x, corner.y - 4, 4.2, 2.7, 0, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(95,165,120,0.75)';
+    ctx.fill();
+  }
+
+  // Bench tops around the fountain ring.
+  for (const bench of benchPoints) {
+    drawIsoBox(
+      ctx,
+      bench.x,
+      bench.y,
+      bench.w,
+      bench.h,
+      4,
+      '#334457',
+      '#233243',
+      '#29394a',
+      'rgba(0,0,0,0.2)',
+    );
+  }
+
+  // Low plaza ring lighting, brighter at night.
+  const lightAlpha = 0.04 + darkness * 0.12 + Math.sin(time * 2.1) * 0.01;
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, 54, 30, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(110,205,245,${lightAlpha})`;
+  ctx.lineWidth = 2;
+  ctx.stroke();
 
   ctx.restore();
 }
@@ -862,7 +963,7 @@ export default function CityCanvas() {
     }
 
     // Deco buildings (background filler) - sprites with fallback
-    for (const d of DECO_BUILDINGS) {
+    for (const d of ALL_DECO_BUILDINGS) {
       const pos = gridToScreen(d.gx, d.gy);
       if (!ROAD_TILES.has(`${d.gx},${d.gy}`)) {
         const decoSprite = getSprite(d.sprite);
@@ -871,7 +972,7 @@ export default function CityCanvas() {
           const destH = (decoSprite.naturalHeight / decoSprite.naturalWidth) * destW;
           const dx = pos.x - destW / 2;
           const dy = pos.y - destH + TILE_HEIGHT * 0.3;
-          ctx.globalAlpha = 0.85;
+          ctx.globalAlpha = d.alpha ?? 0.85;
           ctx.drawImage(decoSprite, dx, dy, destW, destH);
           ctx.globalAlpha = 1;
         } else {
@@ -887,6 +988,9 @@ export default function CityCanvas() {
         }
       }
     }
+
+    // ─── Plaza props around fountain (benches, planters, and ring lights) ──
+    drawFountainPlazaProps(ctx, time, darkness);
 
     // ─── Fountain base (basin + water surface, below buildings) ────────────
     drawFountainBase(ctx, time, fountainIntensity, darkness);
@@ -1175,6 +1279,9 @@ export default function CityCanvas() {
 
     // Preload all building sprites
     preloadAllSprites();
+    if (Math.abs(storeRef.current.zoom - 1) < 0.001) {
+      setZoom(1.16);
+    }
 
     const resize = () => {
       canvas.width = canvas.parentElement?.clientWidth || window.innerWidth;

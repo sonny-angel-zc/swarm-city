@@ -27,10 +27,23 @@ export default function Treasury() {
     const rows = Object.values(telemetry.modelSpend).sort((a, b) => b.costUsd - a.costUsd);
     return rows[0] ?? null;
   }, [telemetry.modelSpend]);
+  const latestTelemetry = telemetry.events.length > 0 ? telemetry.events[telemetry.events.length - 1] : null;
+
+  const recentCost15s = useMemo(() => {
+    const horizonMs = 15_000;
+    if (telemetry.events.length === 0) return 0;
+    const lastTimestamp = telemetry.events[telemetry.events.length - 1].timestamp;
+    return telemetry.events
+      .filter(event => lastTimestamp - event.timestamp <= horizonMs)
+      .reduce((sum, event) => sum + event.estimatedCostUsd, 0);
+  }, [telemetry.events]);
 
   const color = spentPct > 0.8 ? '#EF4444' : spentPct > 0.5 ? '#F59E0B' : '#4ADE80';
   const borderColor = spentPct > 0.8 ? 'border-red-500/30' : spentPct > 0.5 ? 'border-yellow-500/30' : 'border-green-500/30';
   const bgColor = spentPct > 0.8 ? 'bg-red-500/5' : spentPct > 0.5 ? 'bg-yellow-500/5' : 'bg-green-500/5';
+  const maxTriggeredThreshold = economy.triggeredBudgetAlerts.length > 0
+    ? Math.max(...economy.triggeredBudgetAlerts)
+    : null;
 
   return (
     <div
@@ -75,6 +88,16 @@ export default function Treasury() {
         <span>burn ${telemetry.burnRatePerMinUsd.toFixed(4)}/min</span>
         <span>total ${telemetry.totalCostUsd.toFixed(4)}</span>
       </div>
+      <div className="mt-0.5 flex items-center justify-between text-[9px] text-white/35">
+        <span>burst ${recentCost15s.toFixed(4)}/15s</span>
+        <span>{telemetry.events.length} cost events</span>
+      </div>
+
+      {maxTriggeredThreshold !== null && (
+        <div className="mt-1 text-[9px] text-red-300 bg-red-500/10 border border-red-500/25 rounded px-1.5 py-1">
+          alert: {Math.round(maxTriggeredThreshold * 100)}% budget threshold reached
+        </div>
+      )}
 
       {providerRows.length > 0 && (
         <div className="mt-1.5 flex flex-wrap gap-1">
@@ -92,6 +115,12 @@ export default function Treasury() {
       {hottestModel && (
         <div className="mt-1 text-[9px] text-white/40 truncate">
           model {hottestModel.model} ({hottestModel.events} calls)
+        </div>
+      )}
+
+      {latestTelemetry && (
+        <div className="mt-0.5 text-[9px] text-white/40 truncate">
+          latest ${latestTelemetry.estimatedCostUsd.toFixed(4)} on {latestTelemetry.model}
         </div>
       )}
     </div>

@@ -56,6 +56,16 @@ export type Task = {
   createdAt: number;
 };
 
+export type DecompositionStatus = {
+  startedAt: number | null;
+  elapsedMs: number;
+  stallThresholdMs: number;
+  stalled: boolean;
+  stallReason: string | null;
+  suggestedAction: string;
+  warningLogged: boolean;
+};
+
 export type Vehicle = {
   id: string;
   fromAgent: AgentRole;
@@ -118,6 +128,8 @@ export type TokenEconomy = {
   spent: number;
   income: number;    // earned from completed tasks
   expenses: number;  // tokens consumed
+  budgetAlertThresholds: number[];
+  triggeredBudgetAlerts: number[];
   transactions: Transaction[];
   history: EconomyHistoryPoint[];
   agentBudgets: Record<AgentRole, AgentBudget>;

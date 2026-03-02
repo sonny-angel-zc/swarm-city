@@ -100,10 +100,13 @@ export function buildTelemetryEvent(args: {
   inputTokens: number;
   outputTokens: number;
   transactionType: TransactionType;
+  estimatedCostUsd?: number;
 }): TelemetryEvent {
   return {
     ...args,
-    estimatedCostUsd: estimateCostUsd(args.model, args.inputTokens, args.outputTokens),
+    estimatedCostUsd: typeof args.estimatedCostUsd === 'number'
+      ? Math.max(0, args.estimatedCostUsd)
+      : estimateCostUsd(args.model, args.inputTokens, args.outputTokens),
   };
 }
 

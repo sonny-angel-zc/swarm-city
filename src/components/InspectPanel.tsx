@@ -17,6 +17,8 @@ export default function InspectPanel() {
   const selectAgent = useSwarmStore(s => s.selectAgent);
   const sendMessage = useSwarmStore(s => s.sendMessage);
   const [msg, setMsg] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   if (!selectedAgent) return null;
 
@@ -84,11 +86,18 @@ export default function InspectPanel() {
 
       {/* Message Input */}
       <div className="p-3 border-t border-[#21262d]">
-        <form onSubmit={e => {
+        <form onSubmit={async e => {
           e.preventDefault();
-          if (msg.trim()) {
-            sendMessage(selectedAgent, msg.trim());
+          if (!msg.trim()) return;
+          setSendError(null);
+          setSending(true);
+          try {
+            await sendMessage(selectedAgent, msg.trim());
             setMsg('');
+          } catch (error) {
+            setSendError(error instanceof Error ? error.message : 'Failed to send message.');
+          } finally {
+            setSending(false);
           }
         }} className="flex gap-2">
           <input
@@ -103,11 +112,15 @@ export default function InspectPanel() {
           />
           <button
             type="submit"
-            className="bg-[#238636] hover:bg-[#2ea043] text-white text-xs px-3 rounded font-medium transition-colors"
+            disabled={sending}
+            className="bg-[#238636] hover:bg-[#2ea043] disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs px-3 rounded font-medium transition-colors"
           >
-            Send
+            {sending ? '...' : 'Send'}
           </button>
         </form>
+        {sendError && (
+          <p className="mt-2 text-[11px] text-red-300">{sendError}</p>
+        )}
       </div>
     </div>
   );

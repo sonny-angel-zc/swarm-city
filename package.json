@@ -3,9 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack -p 3000",
-    "build": "next build",
-    "start": "next start"
+    "dev": "next dev -p 3000",
+    "dev:turbopack": "next dev --turbopack -p 3000",
+    "start:supervised": "node scripts/start-supervised.mjs",
+    "build": "NODE_ENV=production npm run validate:docs-registry && npm run validate:next-router-roots && NODE_ENV=production next build",
+    "typecheck": "node scripts/typecheck.mjs",
+    "typecheck:tsc": "tsc --noEmit",
+    "start": "next start",
+    "validate:docs-registry": "node scripts/validate-docs-registry.mjs",
+    "validate:next-router-roots": "node scripts/validate-next-router-roots.mjs",
+    "test:e2e": "playwright test",
+    "test:smoke:preflight": "node scripts/smoke-preflight.mjs",
+    "test:smoke": "npm run test:smoke:preflight && playwright test tests/smoke.spec.ts",
+    "test:smoke:ci": "npm run test:smoke:preflight && CI=1 playwright test tests/smoke.spec.ts --workers=1 --retries=0"
   },
   "dependencies": {
     "next": "^15.3.3",
@@ -14,11 +24,12 @@
     "zustand": "^5.0.5"
   },
   "devDependencies": {
+    "@playwright/test": "1.51.1",
+    "@tailwindcss/postcss": "^4.1.0",
     "@types/node": "^22.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
-    "typescript": "^5.8.0",
-    "@tailwindcss/postcss": "^4.1.0",
-    "tailwindcss": "^4.1.0"
+    "tailwindcss": "^4.1.0",
+    "typescript": "5.9.3"
   }
 }

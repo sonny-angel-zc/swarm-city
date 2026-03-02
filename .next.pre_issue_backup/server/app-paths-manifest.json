@@ -1,0 +1,12 @@
+{
+  "/_not-found/page": "app/_not-found/page.js",
+  "/api/agents/[role]/message/route": "app/api/agents/[role]/message/route.js",
+  "/api/autonomous/health/route": "app/api/autonomous/health/route.js",
+  "/api/autonomous/route": "app/api/autonomous/route.js",
+  "/api/autonomous/seed/route": "app/api/autonomous/seed/route.js",
+  "/api/limits/route": "app/api/limits/route.js",
+  "/api/linear/route": "app/api/linear/route.js",
+  "/api/tasks/[id]/events/route": "app/api/tasks/[id]/events/route.js",
+  "/api/tasks/route": "app/api/tasks/route.js",
+  "/page": "app/page.js"
+}

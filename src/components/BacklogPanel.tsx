@@ -22,6 +22,8 @@ function IssueCard({ item }: { item: BacklogItem }) {
   const updateIssueStatus = useSwarmStore(s => s.updateLinearIssueStatus);
   const deploySwarm = useSwarmStore(s => s.deploySwarm);
   const [deploying, setDeploying] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleStatusCycle = async () => {
     if (!item.linearId) return;
@@ -32,13 +34,27 @@ function IssueCard({ item }: { item: BacklogItem }) {
       blocked: 'started',
     };
     const nextType = cycle[item.status] ?? 'unstarted';
-    await updateIssueStatus(item.linearId, nextType);
+    setActionError(null);
+    setUpdatingStatus(true);
+    try {
+      await updateIssueStatus(item.linearId, nextType);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Status update failed.');
+    } finally {
+      setUpdatingStatus(false);
+    }
   };
 
   const handleDeploy = async () => {
+    setActionError(null);
     setDeploying(true);
-    await deploySwarm(item.id);
-    setDeploying(false);
+    try {
+      await deploySwarm(item.id);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Deploy failed.');
+    } finally {
+      setDeploying(false);
+    }
   };
 
   return (
@@ -56,6 +72,7 @@ function IssueCard({ item }: { item: BacklogItem }) {
     >
       <button
         onClick={handleStatusCycle}
+        disabled={updatingStatus || !item.linearId}
         title={`Status: ${item.statusLabel ?? item.status} — click to cycle`}
         style={{
           background: 'none',
@@ -63,6 +80,7 @@ function IssueCard({ item }: { item: BacklogItem }) {
           cursor: item.linearId ? 'pointer' : 'default',
           fontSize: 14,
           color: item.status === 'done' ? '#22c55e' : item.status === 'in_progress' ? '#3b82f6' : '#9ca3af',
+          opacity: updatingStatus ? 0.5 : 1,
         }}
       >
         {STATUS_ICONS[item.status] ?? '○'}
@@ -156,6 +174,11 @@ function IssueCard({ item }: { item: BacklogItem }) {
           {deploying ? '...' : '⚡ Deploy'}
         </button>
       )}
+      {actionError && (
+        <span style={{ fontSize: 10, color: '#fca5a5', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={actionError}>
+          {actionError}
+        </span>
+      )}
     </div>
   );
 }
@@ -164,16 +187,23 @@ function CreateIssueForm({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState('');
   const [priority, setPriority] = useState(3);
   const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const createIssue = useSwarmStore(s => s.createLinearIssue);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim()) return;
+    setSubmitError(null);
     setSubmitting(true);
-    await createIssue(title.trim(), undefined, priority);
-    setSubmitting(false);
-    setTitle('');
-    onClose();
+    try {
+      await createIssue(title.trim(), undefined, priority);
+      setTitle('');
+      onClose();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Issue creation failed.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -249,6 +279,11 @@ function CreateIssueForm({ onClose }: { onClose: () => void }) {
       >
         ✕
       </button>
+      {submitError && (
+        <div style={{ fontSize: 11, color: '#fca5a5', marginLeft: 4, maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={submitError}>
+          {submitError}
+        </div>
+      )}
     </form>
   );
 }
@@ -259,6 +294,7 @@ export default function BacklogPanel() {
   const autonomous = useSwarmStore(s => s.autonomous);
   const syncLinear = useSwarmStore(s => s.syncLinear);
   const [showCreate, setShowCreate] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const grouped = {
     in_progress: backlog.filter(i => i.status === 'in_progress'),
@@ -321,7 +357,14 @@ export default function BacklogPanel() {
             + New
           </button>
           <button
-            onClick={syncLinear}
+            onClick={async () => {
+              setSyncError(null);
+              try {
+                await syncLinear();
+              } catch (error) {
+                setSyncError(error instanceof Error ? error.message : 'Sync failed.');
+              }
+            }}
             disabled={linear.syncing}
             style={{
               background: 'rgba(255,255,255,0.06)',
@@ -344,6 +387,11 @@ export default function BacklogPanel() {
       {linear.error && (
         <div style={{ padding: '6px 12px', fontSize: 11, color: '#ef4444', background: 'rgba(239,68,68,0.1)' }}>
           {linear.error}
+        </div>
+      )}
+      {syncError && (
+        <div style={{ padding: '6px 12px', fontSize: 11, color: '#fca5a5', background: 'rgba(248,113,113,0.1)' }}>
+          {syncError}
         </div>
       )}
 

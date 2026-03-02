@@ -21,6 +21,8 @@ const statusDots: Record<string, string> = {
 
 export default function AgentPanel() {
   const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const selectedAgent = useSwarmStore(s => s.selectedAgent);
   const agents = useSwarmStore(s => s.agents);
@@ -37,11 +39,19 @@ export default function AgentPanel() {
 
   const b = agent.building;
 
-  const handleSend = (e: React.FormEvent) => {
+  const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!message.trim() || !selectedAgent) return;
-    sendMessage(selectedAgent, message.trim());
-    setMessage('');
+    setSendError(null);
+    setSending(true);
+    try {
+      await sendMessage(selectedAgent, message.trim());
+      setMessage('');
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : 'Failed to send message.');
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -139,16 +149,21 @@ export default function AgentPanel() {
           />
           <button
             type="submit"
+            disabled={sending}
             className="px-3 py-1.5 text-xs rounded-md font-medium transition-colors"
             style={{
               backgroundColor: b.color + '33',
               color: b.color,
               border: `1px solid ${b.color}44`,
+              opacity: sending ? 0.6 : 1,
             }}
           >
-            Send
+            {sending ? '...' : 'Send'}
           </button>
         </form>
+        {sendError && (
+          <p className="mt-2 text-[11px] text-red-300">{sendError}</p>
+        )}
       </div>
     </div>
   );

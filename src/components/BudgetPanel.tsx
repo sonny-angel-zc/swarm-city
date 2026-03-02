@@ -5,6 +5,7 @@ import { BUILDING_CONFIGS, AgentRole } from '@/core/types';
 
 export default function BudgetPanel() {
   const economy = useSwarmStore(s => s.economy);
+  const telemetry = useSwarmStore(s => s.telemetry);
   const budgetPanelOpen = useSwarmStore(s => s.budgetPanelOpen);
   const setBudgetPanelOpen = useSwarmStore(s => s.setBudgetPanelOpen);
   const setAgentBudget = useSwarmStore(s => s.setAgentBudget);
@@ -13,6 +14,9 @@ export default function BudgetPanel() {
 
   const remaining = economy.totalBudget - economy.spent;
   const netFlow = economy.income - economy.expenses;
+  const usedPct = economy.totalBudget > 0 ? economy.spent / economy.totalBudget : 0;
+  const nextThreshold = economy.budgetAlertThresholds.find(t => !economy.triggeredBudgetAlerts.includes(t)) ?? null;
+  const latestTelemetry = telemetry.events.length > 0 ? telemetry.events[telemetry.events.length - 1] : null;
 
   // Build spend history bars from history points
   const historyBars = economy.history.slice(-20);
@@ -42,7 +46,7 @@ export default function BudgetPanel() {
           </div>
 
           {/* Summary stats */}
-          <div className="grid grid-cols-3 gap-px bg-[#1e2a3a] border-b border-[#1e2a3a]">
+          <div className="grid grid-cols-4 gap-px bg-[#1e2a3a] border-b border-[#1e2a3a]">
             <div className="bg-[#0d1117] p-3 text-center">
               <div className="text-[10px] text-white/40 uppercase tracking-wider">Income</div>
               <div className="text-sm font-mono text-green-400 mt-0.5">+{economy.income.toLocaleString()}</div>
@@ -57,6 +61,19 @@ export default function BudgetPanel() {
                 {remaining.toLocaleString()}
               </div>
             </div>
+            <div className="bg-[#0d1117] p-3 text-center">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Cost</div>
+              <div className="text-sm font-mono text-amber-300 mt-0.5">${telemetry.totalCostUsd.toFixed(4)}</div>
+            </div>
+          </div>
+
+          <div className="px-4 py-2 border-b border-[#1e2a3a] text-[10px] text-white/55 flex items-center justify-between">
+            <span>budget used {Math.min(100, usedPct * 100).toFixed(1)}%</span>
+            <span>
+              {nextThreshold
+                ? `next alert ${Math.round(nextThreshold * 100)}%`
+                : 'all budget alerts triggered'}
+            </span>
           </div>
 
           {/* Agent budgets */}
@@ -132,6 +149,25 @@ export default function BudgetPanel() {
               </div>
             </div>
           )}
+
+          <div className="p-4 border-t border-[#1e2a3a]">
+            <h3 className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Live Cost</h3>
+            <div className="grid grid-cols-2 gap-2 text-[10px]">
+              <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-1.5">
+                <div className="text-white/45">Burn Rate</div>
+                <div className="font-mono text-amber-200 mt-0.5">${telemetry.burnRatePerMinUsd.toFixed(4)}/min</div>
+              </div>
+              <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-1.5">
+                <div className="text-white/45">Cost Events</div>
+                <div className="font-mono text-white/70 mt-0.5">{telemetry.events.length}</div>
+              </div>
+            </div>
+            {latestTelemetry && (
+              <div className="mt-2 text-[10px] text-white/55 truncate">
+                latest ${latestTelemetry.estimatedCostUsd.toFixed(4)} on {latestTelemetry.model}
+              </div>
+            )}
+          </div>
 
           {/* Recent transactions */}
           <div className="p-4 border-t border-[#1e2a3a] max-h-32 overflow-y-auto">

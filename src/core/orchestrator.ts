@@ -1,6 +1,8 @@
 // Server-side only — do NOT import in client components
-import { spawn, execSync } from 'child_process';
-import { mkdirSync } from 'fs';
+import { spawn, execSync, spawnSync } from 'child_process';
+import { accessSync, constants as fsConstants, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import { AgentRole, SubTask, Task } from './types';
 
 // ─── SSE Event Types ──────────────────────────────────────────────────────────
@@ -9,6 +11,7 @@ export type SSEEvent =
   | { type: 'task_created'; task: Task }
   | { type: 'decomposition_start'; taskId: string }
   | { type: 'decomposition_complete'; taskId: string; subtasks: SubTask[] }
+  | { type: 'agent_workspace'; taskId: string; role: AgentRole; worktreePath: string; branch: string; created: boolean }
   | { type: 'agent_assigned'; taskId: string; subtask: SubTask; role: AgentRole }
   | { type: 'agent_output'; taskId: string; role: AgentRole; output: string }
   | { type: 'agent_tool_use'; taskId: string; role: AgentRole; tool: string }
@@ -73,15 +76,354 @@ function emitEvent(taskId: string, event: SSEEvent) {
   }
 }
 
-function setupWorkDir(taskId: string, role: AgentRole): string {
-  const dir = `/tmp/swarm-city-tasks/${taskId}/${role}`;
-  mkdirSync(dir, { recursive: true });
+function sanitizeSegment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]/g, '-').replace(/-+/g, '-');
+}
+
+function gitExec(repoRoot: string, args: string[]): string {
+  const res = spawnSync('git', args, {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  if (res.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${res.stderr?.trim() || 'unknown error'}`);
+  }
+  return (res.stdout ?? '').trim();
+}
+
+function resolveRepoRoot(startDir = process.cwd()): string {
+  const configured = process.env.SWARM_REPO_ROOT?.trim();
+  if (configured) return path.resolve(configured);
+  return execSync('git rev-parse --show-toplevel', { cwd: startDir, encoding: 'utf8' }).trim();
+}
+
+function resolveWorktreeRoot(repoRoot: string): string {
+  const configured = process.env.SWARM_WORKTREE_ROOT?.trim();
+  if (configured) return path.resolve(configured);
+  return path.resolve(repoRoot, '..', 'swarm-city-worktrees');
+}
+
+type WorktreeInfo = {
+  dir: string;
+  branch: string;
+  created: boolean;
+};
+
+type AutonomousWorktreeInfo = {
+  repoRoot: string;
+  worktreeDir: string;
+  branch: string;
+  issueIdentifier: string;
+};
+
+const AUTONOMOUS_RUN_META = '.swarm-run.json';
+
+function resolveAutonomousRunMetaPath(worktreeDir: string): string {
+  return path.join(worktreeDir, AUTONOMOUS_RUN_META);
+}
+
+function isPidRunning(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    execSync('git init -q', { cwd: dir });
-    execSync('git config user.email "agent@swarm.city"', { cwd: dir });
-    execSync('git config user.name "Swarm Agent"', { cwd: dir });
-  } catch { /* git already initialised or not needed */ }
-  return dir;
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureAgentWorktree(taskId: string, role: AgentRole): WorktreeInfo {
+  const repoRoot = resolveRepoRoot();
+  const worktreeRoot = resolveWorktreeRoot(repoRoot);
+  const taskSegment = sanitizeSegment(taskId);
+  const roleSegment = sanitizeSegment(role);
+  const dir = path.join(worktreeRoot, taskSegment, roleSegment);
+  const branch = `swarm/${taskSegment}/${roleSegment}`;
+  const gitLink = path.join(dir, '.git');
+
+  mkdirSync(path.dirname(dir), { recursive: true });
+
+  if (existsSync(gitLink)) {
+    return { dir, branch, created: false };
+  }
+
+  gitExec(repoRoot, ['worktree', 'add', '-f', '-B', branch, dir, 'HEAD']);
+  gitExec(dir, ['config', 'user.email', 'agent@swarm.city']);
+  gitExec(dir, ['config', 'user.name', 'Swarm Agent']);
+  return { dir, branch, created: true };
+}
+
+function setupWorkDir(taskId: string, role: AgentRole): WorktreeInfo {
+  return ensureAgentWorktree(taskId, role);
+}
+
+function resolveAutonomousWorktreeRoot(): string {
+  const configured = process.env.SWARM_AUTONOMOUS_WORKTREE_ROOT?.trim();
+  if (configured) return path.resolve(configured);
+  return path.join(os.tmpdir(), 'swarm-worktrees');
+}
+
+function gitRefExists(repoRoot: string, ref: string): boolean {
+  const res = spawnSync('git', ['rev-parse', '--verify', '--quiet', ref], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  return res.status === 0;
+}
+
+function branchExists(repoRoot: string, branch: string): boolean {
+  if (gitRefExists(repoRoot, `refs/heads/${branch}`)) return true;
+  const remote = spawnSync('git', ['ls-remote', '--heads', 'origin', branch], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  if (remote.status === 0 && remote.stdout.trim().length > 0) return true;
+  return false;
+}
+
+function resolveMainRef(repoRoot: string): string {
+  if (gitRefExists(repoRoot, 'refs/heads/main')) return 'main';
+  if (gitRefExists(repoRoot, 'refs/remotes/origin/main')) return 'origin/main';
+  throw new Error('Cannot find main branch (expected local main or origin/main).');
+}
+
+function createAutonomousWorktree(workDir: string, issueIdentifier: string): AutonomousWorktreeInfo {
+  const repoRoot = resolveRepoRoot(workDir);
+  const worktreeRoot = resolveAutonomousWorktreeRoot();
+  const issueSegment = sanitizeSegment(issueIdentifier || 'unknown-issue');
+  const issueDir = path.join(worktreeRoot, issueSegment);
+
+  mkdirSync(issueDir, { recursive: true });
+  gitExec(repoRoot, ['worktree', 'prune']);
+
+  let branch = `auto/${issueSegment}`;
+  if (branchExists(repoRoot, branch)) {
+    branch = `auto/${issueSegment}-${Date.now()}`;
+  }
+
+  const worktreeDir = mkdtempSync(path.join(issueDir, 'run-'));
+  const mainRef = resolveMainRef(repoRoot);
+  gitExec(repoRoot, ['worktree', 'add', '-f', '-B', branch, worktreeDir, mainRef]);
+  gitExec(worktreeDir, ['config', 'user.email', 'agent@swarm.city']);
+  gitExec(worktreeDir, ['config', 'user.name', 'Swarm Agent']);
+  writeFileSync(
+    resolveAutonomousRunMetaPath(worktreeDir),
+    JSON.stringify({
+      ownerPid: process.pid,
+      issueIdentifier: issueIdentifier || 'AUTONOMOUS',
+      startedAt: new Date().toISOString(),
+    }),
+    { encoding: 'utf8' },
+  );
+
+  return {
+    repoRoot,
+    worktreeDir,
+    branch,
+    issueIdentifier: issueIdentifier || 'AUTONOMOUS',
+  };
+}
+
+function cleanupAutonomousWorktree(worktree: AutonomousWorktreeInfo): void {
+  try {
+    gitExec(worktree.repoRoot, ['worktree', 'remove', '--force', worktree.worktreeDir]);
+  } catch {
+    rmSync(worktree.worktreeDir, { recursive: true, force: true });
+  }
+  try {
+    gitExec(worktree.repoRoot, ['worktree', 'prune']);
+  } catch {
+    // best-effort cleanup
+  }
+}
+
+export function hasActiveCodexProcess(): boolean {
+  const codex = spawnSync('pgrep', ['-f', 'codex'], { encoding: 'utf8' });
+  if (codex.status === 0 && codex.stdout.trim().length > 0) return true;
+  const openai = spawnSync('pgrep', ['-f', 'openclaw'], { encoding: 'utf8' });
+  return openai.status === 0 && openai.stdout.trim().length > 0;
+}
+
+export function cleanupStaleAutonomousWorktrees(workDir = process.cwd()): {
+  removed: number;
+  skipped: number;
+  errors: number;
+} {
+  const repoRoot = resolveRepoRoot(workDir);
+  const worktreeRoot = resolveAutonomousWorktreeRoot();
+  const summary = { removed: 0, skipped: 0, errors: 0 };
+
+  if (!existsSync(worktreeRoot)) return summary;
+
+  const issueDirs = readdirSync(worktreeRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  for (const issueDir of issueDirs) {
+    const issuePath = path.join(worktreeRoot, issueDir.name);
+    const runs = readdirSync(issuePath, { withFileTypes: true }).filter(
+      (entry) => entry.isDirectory() && entry.name.startsWith('run-'),
+    );
+
+    for (const run of runs) {
+      const runPath = path.join(issuePath, run.name);
+      let ownerPid: number | null = null;
+      try {
+        const metaPath = resolveAutonomousRunMetaPath(runPath);
+        if (existsSync(metaPath)) {
+          const parsed = JSON.parse(readFileSync(metaPath, 'utf8')) as { ownerPid?: unknown };
+          if (typeof parsed.ownerPid === 'number') ownerPid = parsed.ownerPid;
+        }
+      } catch {
+        ownerPid = null;
+      }
+
+      if (ownerPid && isPidRunning(ownerPid)) {
+        summary.skipped += 1;
+        continue;
+      }
+
+      try {
+        gitExec(repoRoot, ['worktree', 'remove', '--force', runPath]);
+      } catch {
+        try {
+          rmSync(runPath, { recursive: true, force: true });
+        } catch {
+          summary.errors += 1;
+          continue;
+        }
+      }
+      summary.removed += 1;
+    }
+  }
+
+  try {
+    gitExec(repoRoot, ['worktree', 'prune']);
+  } catch {
+    summary.errors += 1;
+  }
+
+  return summary;
+}
+
+export function cleanupAutonomousBranchesForClosedIssues(
+  issueIdentifiers: string[],
+  workDir = process.cwd(),
+): { deleted: number; skipped: number; errors: number } {
+  const repoRoot = resolveRepoRoot(workDir);
+  const summary = { deleted: 0, skipped: 0, errors: 0 };
+  const normalized = Array.from(
+    new Set(
+      issueIdentifiers
+        .map((value) => sanitizeSegment(value))
+        .filter(Boolean),
+    ),
+  );
+  if (normalized.length === 0) return summary;
+
+  const currentBranch = gitExec(repoRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const branchListing = gitExec(repoRoot, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/auto']);
+  const branches = branchListing
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  for (const branch of branches) {
+    const match = normalized.some((id) => branch === `auto/${id}` || branch.startsWith(`auto/${id}-`));
+    if (!match) continue;
+    if (branch === currentBranch) {
+      summary.skipped += 1;
+      continue;
+    }
+    const deleted = spawnSync('git', ['branch', '-D', branch], { cwd: repoRoot, encoding: 'utf8' });
+    if (deleted.status === 0) {
+      summary.deleted += 1;
+    } else {
+      summary.errors += 1;
+    }
+  }
+
+  return summary;
+}
+
+function ensureGhReady(workDir: string): void {
+  const version = spawnSync('gh', ['--version'], { cwd: workDir, encoding: 'utf8' });
+  if (version.status !== 0) {
+    throw new Error('GitHub CLI (gh) is not available in PATH.');
+  }
+  const auth = spawnSync('gh', ['auth', 'status', '--hostname', 'github.com'], { cwd: workDir, encoding: 'utf8' });
+  if (auth.status !== 0) {
+    throw new Error(`GitHub CLI is not authenticated: ${(auth.stderr || auth.stdout || '').trim()}`);
+  }
+}
+
+function hasTrackedOrUntrackedChanges(workDir: string): boolean {
+  const status = spawnSync('git', ['status', '--porcelain'], { cwd: workDir, encoding: 'utf8' });
+  if (status.status !== 0) {
+    throw new Error(`git status failed: ${(status.stderr ?? '').trim()}`);
+  }
+  return status.stdout.trim().length > 0;
+}
+
+function finalizeAutonomousBranch(params: {
+  worktree: AutonomousWorktreeInfo;
+  issueTitle: string;
+  issueDescription?: string | null;
+}): { commitSha: string; prUrl: string } | null {
+  const { worktree } = params;
+  if (!hasTrackedOrUntrackedChanges(worktree.worktreeDir)) {
+    return null;
+  }
+
+  gitExec(worktree.worktreeDir, ['add', '-A']);
+  const staged = spawnSync('git', ['diff', '--cached', '--name-only'], {
+    cwd: worktree.worktreeDir,
+    encoding: 'utf8',
+  });
+  if (staged.status !== 0) {
+    throw new Error(`Unable to inspect staged files: ${(staged.stderr ?? '').trim()}`);
+  }
+  if (staged.stdout.trim().length === 0) {
+    return null;
+  }
+
+  const commitTitle = `${worktree.issueIdentifier}: ${params.issueTitle}`.slice(0, 200);
+  gitExec(worktree.worktreeDir, ['commit', '-m', commitTitle]);
+  const commitSha = gitExec(worktree.worktreeDir, ['rev-parse', 'HEAD']);
+
+  gitExec(worktree.worktreeDir, ['push', '--set-upstream', 'origin', worktree.branch]);
+  ensureGhReady(worktree.worktreeDir);
+
+  const prBody = [
+    `Automated implementation for ${worktree.issueIdentifier}.`,
+    '',
+    params.issueDescription ? params.issueDescription.trim() : '(no issue description provided)',
+  ].join('\n');
+  const prCreate = spawnSync(
+    'gh',
+    [
+      'pr',
+      'create',
+      '--base',
+      'main',
+      '--head',
+      worktree.branch,
+      '--title',
+      commitTitle,
+      '--body',
+      prBody,
+    ],
+    {
+      cwd: worktree.worktreeDir,
+      encoding: 'utf8',
+    },
+  );
+  if (prCreate.status !== 0) {
+    // PR creation may fail due to PAT permissions — log warning but don't fail the task
+    const prErr = (prCreate.stderr || prCreate.stdout || '').trim();
+    console.warn(`[orchestrator] gh pr create failed (non-fatal): ${prErr}`);
+    return { commitSha, prUrl: `https://github.com/sonny-angel-zc/swarm-city/tree/${worktree.branch}` };
+  }
+
+  const prUrl = (prCreate.stdout || '').trim().split('\n').map((line) => line.trim()).filter(Boolean).pop() ?? '';
+  return { commitSha, prUrl };
 }
 
 function delay(ms: number): Promise<void> {
@@ -165,6 +507,36 @@ function parseCodexJsonLineText(obj: unknown): string[] {
     }
   }
   return out.filter(Boolean);
+}
+
+type CodexUsageSummary = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  model: string;
+};
+
+function parseCodexUsage(obj: unknown): CodexUsageSummary | null {
+  if (!obj || typeof obj !== 'object') return null;
+  const node = obj as Record<string, unknown>;
+
+  const input = node.input_tokens ?? node.inputTokens ?? null;
+  const output = node.output_tokens ?? node.outputTokens ?? null;
+  const total = node.total_tokens ?? node.totalTokens ?? null;
+  const model = typeof node.model === 'string' ? node.model : '';
+
+  const hasNumberish = [input, output, total].some((v) => typeof v === 'number');
+  if (hasNumberish) {
+    const inputTokens = typeof input === 'number' ? input : 0;
+    const outputTokens = typeof output === 'number' ? output : 0;
+    const totalTokens = typeof total === 'number' ? total : inputTokens + outputTokens;
+    return { inputTokens, outputTokens, totalTokens, model };
+  }
+
+  if (node.usage && typeof node.usage === 'object') {
+    return parseCodexUsage(node.usage);
+  }
+  return null;
 }
 
 function runAnthropicAgent(
@@ -282,6 +654,7 @@ function runOpenAIAgent(
   return new Promise((resolve, reject) => {
     const fullPrompt = `${AGENT_SYSTEM_PROMPTS[role]}\n\n${prompt}`;
     const codexBin = process.env.SWARM_CODEX_BIN ?? 'codex';
+    const isolatedContext = (process.env.SWARM_CODEX_ISOLATED_CONTEXT ?? 'true').toLowerCase() !== 'false';
     const args = [
       'exec',
       '--json',
@@ -294,6 +667,7 @@ function runOpenAIAgent(
       model,
       fullPrompt,
     ];
+    if (isolatedContext) args.splice(7, 0, '--ephemeral');
 
     const proc = spawn(codexBin, args, {
       cwd: workDir,
@@ -313,11 +687,14 @@ function runOpenAIAgent(
         .filter(Boolean);
 
       let parsedText = '';
+      let usage: CodexUsageSummary | null = null;
       for (const line of lines) {
         try {
           const obj = JSON.parse(line);
           const chunks = parseCodexJsonLineText(obj);
           if (chunks.length > 0) parsedText += `${chunks.join('\n')}\n`;
+          const candidate = parseCodexUsage(obj);
+          if (candidate) usage = candidate;
         } catch {
           // non-json line, ignore here
         }
@@ -326,6 +703,21 @@ function runOpenAIAgent(
       const text = parsedText.trim() || stdout.trim();
       if (stderr.trim()) {
         emitEvent(taskId, { type: 'agent_tool_use', taskId, role, tool: 'codex-cli' });
+      }
+      if (usage) {
+        emitEvent(taskId, {
+          type: 'agent_usage',
+          taskId,
+          role,
+          usage: {
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadTokens: 0,
+            cacheCreateTokens: 0,
+            costUsd: 0,
+            model: usage.model || model,
+          },
+        });
       }
 
       if (code === 0 && text) {
@@ -353,6 +745,12 @@ type CodexExecResult = {
   text: string;
   stderr: string;
   stdout: string;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    model: string;
+  };
 };
 
 export async function runCodexExec(params: {
@@ -360,9 +758,11 @@ export async function runCodexExec(params: {
   workDir: string;
   model?: string;
   sandbox?: 'read-only' | 'workspace-write';
+  isolatedContext?: boolean;
 }): Promise<CodexExecResult> {
   return new Promise((resolve, reject) => {
     const codexBin = process.env.SWARM_CODEX_BIN ?? 'codex';
+    const isolatedContext = params.isolatedContext ?? (process.env.SWARM_CODEX_ISOLATED_CONTEXT ?? 'true').toLowerCase() !== 'false';
     const args = [
       'exec',
       '--json',
@@ -375,6 +775,7 @@ export async function runCodexExec(params: {
       params.model ?? 'gpt-5.3-codex',
       params.prompt,
     ];
+    if (isolatedContext) args.splice(7, 0, '--ephemeral');
 
     const proc = spawn(codexBin, args, {
       cwd: params.workDir,
@@ -394,11 +795,26 @@ export async function runCodexExec(params: {
         .filter(Boolean);
 
       let parsedText = '';
+      let usage: CodexExecResult['usage'] = {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        model: params.model ?? 'gpt-5.3-codex',
+      };
       for (const line of lines) {
         try {
           const obj = JSON.parse(line);
           const chunks = parseCodexJsonLineText(obj);
           if (chunks.length > 0) parsedText += `${chunks.join('\n')}\n`;
+          const candidate = parseCodexUsage(obj);
+          if (candidate) {
+            usage = {
+              inputTokens: candidate.inputTokens,
+              outputTokens: candidate.outputTokens,
+              totalTokens: candidate.totalTokens,
+              model: candidate.model || usage.model,
+            };
+          }
         } catch {
           // ignore non-json lines in JSON mode
         }
@@ -409,6 +825,7 @@ export async function runCodexExec(params: {
         text: parsedText.trim() || stdout.trim(),
         stderr: stderr.trim(),
         stdout: stdout.trim(),
+        usage,
       });
     });
   });
@@ -420,25 +837,168 @@ export type AutonomousExecutionResult = {
   restarts: string[];
   rateLimited: boolean;
   retryAfterMs: number | null;
+  preflight: AutonomousPreflightResult;
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+    model: string;
+  };
 };
+
+export type AutonomousPreflightResult = {
+  noCommitMode: boolean;
+  constraints: string[];
+};
+
+const ISSUE_TITLE_PLACEHOLDERS = new Set([
+  'hi',
+  'hello',
+  'hey',
+  'test',
+  'todo',
+  'tbd',
+  'wip',
+  'fix',
+  'issue',
+]);
+
+function normalizeIssueText(value?: string | null): string {
+  if (!value) return '';
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function isMissingIssueDescription(description?: string | null): boolean {
+  const normalized = normalizeIssueText(description).toLowerCase();
+  return !normalized || normalized === '(no description provided)';
+}
+
+function getIssueInputProblem(title: string, description?: string | null): string | null {
+  const normalizedTitle = normalizeIssueText(title);
+  const normalizedTitleLower = normalizedTitle.toLowerCase();
+  const missingDescription = isMissingIssueDescription(description);
+
+  if (!normalizedTitle) {
+    return 'Issue title is empty. Add a specific title and description before running autonomous execution.';
+  }
+
+  if (missingDescription && (normalizedTitle.length < 8 || ISSUE_TITLE_PLACEHOLDERS.has(normalizedTitleLower))) {
+    return `Issue "${normalizedTitle}" is under-specified (missing description). Add acceptance criteria or implementation details and retry.`;
+  }
+
+  return null;
+}
+
+export function runAutonomousPreflight(workDir: string): AutonomousPreflightResult {
+  const constraints: string[] = [];
+
+  const gitDir = path.join(workDir, '.git');
+  if (!existsSync(gitDir)) {
+    constraints.push('.git directory is missing; commits cannot be created.');
+  } else {
+    try {
+      if (!statSync(gitDir).isDirectory()) {
+        constraints.push('.git path exists but is not a directory; commits cannot be created.');
+      } else {
+        const probe = path.join(gitDir, `.swarm-preflight-${process.pid}-${Date.now()}.tmp`);
+        writeFileSync(probe, 'preflight', { flag: 'wx' });
+        unlinkSync(probe);
+      }
+    } catch (err) {
+      constraints.push(`.git is not writable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  const lockfileCandidates = [
+    'package-lock.json',
+    'pnpm-lock.yaml',
+    'yarn.lock',
+    'bun.lockb',
+    'npm-shrinkwrap.json',
+  ];
+  const existingLockfiles = lockfileCandidates.filter((file) => existsSync(path.join(workDir, file)));
+
+  if (existingLockfiles.length > 0) {
+    const blocked: string[] = [];
+    for (const lockfile of existingLockfiles) {
+      try {
+        accessSync(path.join(workDir, lockfile), fsConstants.W_OK);
+      } catch {
+        blocked.push(lockfile);
+      }
+    }
+    if (blocked.length > 0) {
+      constraints.push(`Lockfile(s) not writable: ${blocked.join(', ')}`);
+    }
+  } else if (existsSync(path.join(workDir, 'package.json'))) {
+    try {
+      const probe = path.join(workDir, `.swarm-lockfile-preflight-${process.pid}-${Date.now()}.tmp`);
+      writeFileSync(probe, 'preflight', { flag: 'wx' });
+      unlinkSync(probe);
+    } catch (err) {
+      constraints.push(`Workspace does not allow lockfile updates: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  return {
+    noCommitMode: constraints.length > 0,
+    constraints,
+  };
+}
 
 export async function executeAutonomousTaskWithCodex(params: {
   title: string;
   description?: string | null;
+  issueIdentifier: string;
   workDir: string;
   model?: string;
+  preflight?: AutonomousPreflightResult;
 }): Promise<AutonomousExecutionResult> {
   const model = params.model ?? 'gpt-5.3-codex';
   const maxAttempts = Number(process.env.SWARM_AUTONOMOUS_MAX_RETRIES ?? '3');
   const restarts: string[] = [];
+  const preflight = params.preflight ?? runAutonomousPreflight(params.workDir);
+  const issueInputProblem = getIssueInputProblem(params.title, params.description);
+  const usage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    model,
+  };
+
+  if (issueInputProblem) {
+    return {
+      ok: false,
+      output: issueInputProblem,
+      restarts,
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  }
+
+  const preflightLine = preflight.constraints.length > 0
+    ? preflight.constraints.join(' | ')
+    : 'none';
 
   const basePrompt = [
     'You are an autonomous engineering agent working directly on the current repository.',
     'Implement the Linear issue described below end-to-end.',
     'Constraints:',
+    preflight.noCommitMode
+      ? '- Preflight mode: no-commit (git/lockfile constraints detected).'
+      : '- Preflight mode: normal (git/lockfile checks passed).',
+    `- Preflight constraints: ${preflightLine}`,
+    preflight.noCommitMode
+      ? '- Do not run git add/commit or any git write operation.'
+      : '- Commit is handled by the orchestrator after implementation.',
     '- Modify code directly in this repo.',
+    '- Do not run git commit, git push, or gh pr create; the orchestrator will do this after your implementation.',
     '- Run any validation needed to ensure the implementation is coherent.',
-    '- Commit your changes with a clear commit message.',
+    preflight.noCommitMode
+      ? '- In your first output line, report the preflight constraints before describing changes.'
+      : '- If no constraints are present, you may proceed with normal commit flow.',
     '- Keep output concise: what changed, what was validated, and commit hash.',
     '',
     `Issue Title: ${params.title}`,
@@ -446,65 +1006,110 @@ export async function executeAutonomousTaskWithCodex(params: {
   ].join('\n');
 
   let prompt = basePrompt;
+  let worktree: AutonomousWorktreeInfo | null = null;
 
-  for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
-    const result = await runCodexExec({
-      prompt,
-      workDir: params.workDir,
-      model,
-      sandbox: 'workspace-write',
-    });
+  try {
+    worktree = createAutonomousWorktree(params.workDir, params.issueIdentifier);
+    const activeWorktree = worktree;
+    for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
+      const result = await runCodexExec({
+        prompt,
+        workDir: activeWorktree.worktreeDir,
+        model,
+        sandbox: 'workspace-write',
+        isolatedContext: true,
+      });
 
-    if (result.code === 0) {
-      return {
-        ok: true,
-        output: result.text,
-        restarts,
-        rateLimited: false,
-        retryAfterMs: null,
-      };
-    }
+      usage.inputTokens += result.usage.inputTokens;
+      usage.outputTokens += result.usage.outputTokens;
+      usage.totalTokens += result.usage.totalTokens;
+      if (result.usage.model) usage.model = result.usage.model;
 
-    const combined = [result.stderr, result.stdout].filter(Boolean).join('\n');
-    const kind = detectRetryKind(combined || `exit code ${String(result.code)}`);
-    const canRetry = attempt < Math.max(1, maxAttempts);
+      if (result.code === 0) {
+        const finalized = preflight.noCommitMode
+          ? null
+          : finalizeAutonomousBranch({
+            worktree: activeWorktree,
+            issueTitle: params.title,
+            issueDescription: params.description,
+          });
 
-    if (kind === 'rate_limit') {
+        const summaryLines = finalized
+          ? [`Branch: ${activeWorktree.branch}`, `Commit: ${finalized.commitSha}`, `PR: ${finalized.prUrl || '(created; URL not returned)'}`]
+          : preflight.noCommitMode
+            ? ['No-commit mode enabled; skipped commit, push, and PR creation.']
+            : ['No file changes detected; skipped commit, push, and PR creation.'];
+
+        return {
+          ok: true,
+          output: `${result.text}\n\n${summaryLines.join('\n')}`.trim(),
+          restarts,
+          rateLimited: false,
+          retryAfterMs: null,
+          preflight,
+          usage,
+        };
+      }
+
+      const combined = [result.stderr, result.stdout].filter(Boolean).join('\n');
+      const kind = detectRetryKind(combined || `exit code ${String(result.code)}`);
+      const canRetry = attempt < Math.max(1, maxAttempts);
+
+      if (kind === 'rate_limit') {
+        return {
+          ok: false,
+          output: combined || `codex exited with code ${String(result.code)}`,
+          restarts,
+          rateLimited: true,
+          retryAfterMs: parseRetryAfterMs(combined),
+          preflight,
+          usage,
+        };
+      }
+
+      if (canRetry && (kind === 'token_limit' || kind === 'transient')) {
+        const waitMs = backoffMs(attempt, combined);
+        restarts.push(`Auto-restart due to ${kind} (attempt ${attempt + 1}/${maxAttempts})`);
+        if (kind === 'token_limit') {
+          prompt = compactPromptForRetry(basePrompt, attempt + 1);
+        }
+        await delay(waitMs);
+        continue;
+      }
+
       return {
         ok: false,
         output: combined || `codex exited with code ${String(result.code)}`,
         restarts,
-        rateLimited: true,
-        retryAfterMs: parseRetryAfterMs(combined),
+        rateLimited: false,
+        retryAfterMs: null,
+        preflight,
+        usage,
       };
-    }
-
-    if (canRetry && (kind === 'token_limit' || kind === 'transient')) {
-      const waitMs = backoffMs(attempt, combined);
-      restarts.push(`Auto-restart due to ${kind} (attempt ${attempt + 1}/${maxAttempts})`);
-      if (kind === 'token_limit') {
-        prompt = compactPromptForRetry(basePrompt, attempt + 1);
-      }
-      await delay(waitMs);
-      continue;
     }
 
     return {
       ok: false,
-      output: combined || `codex exited with code ${String(result.code)}`,
+      output: 'Autonomous execution failed after retry budget.',
       restarts,
       rateLimited: false,
       retryAfterMs: null,
+      preflight,
+      usage,
     };
+  } catch (err) {
+    return {
+      ok: false,
+      output: err instanceof Error ? err.message : String(err),
+      restarts,
+      rateLimited: false,
+      retryAfterMs: null,
+      preflight,
+      usage,
+    };
+  } finally {
+    if (worktree) cleanupAutonomousWorktree(worktree);
   }
-
-  return {
-    ok: false,
-    output: 'Autonomous execution failed after retry budget.',
-    restarts,
-    rateLimited: false,
-    retryAfterMs: null,
-  };
 }
 
 async function runAgentWithRecovery(
@@ -565,7 +1170,15 @@ async function runPMDecomposition(
   title: string,
   agentConfig: TaskState['agentConfig'],
 ): Promise<SubTask[]> {
-  const workDir = setupWorkDir(taskId, 'pm');
+  const worktree = setupWorkDir(taskId, 'pm');
+  emitEvent(taskId, {
+    type: 'agent_workspace',
+    taskId,
+    role: 'pm',
+    worktreePath: worktree.dir,
+    branch: worktree.branch,
+    created: worktree.created,
+  });
   emitEvent(taskId, { type: 'decomposition_start', taskId });
 
   const prompt =
@@ -584,7 +1197,7 @@ async function runPMDecomposition(
 
   let rawOutput = '';
   try {
-    rawOutput = await runAgent(taskId, 'pm', prompt, workDir, agentConfig);
+    rawOutput = await runAgent(taskId, 'pm', prompt, worktree.dir, agentConfig);
   } catch (err) {
     console.error('[orchestrator] PM decomposition failed:', err);
   }
@@ -638,7 +1251,15 @@ async function orchestrate(taskId: string) {
       subtask.status = 'in_progress';
       emitEvent(taskId, { type: 'agent_assigned', taskId, subtask: { ...subtask }, role });
 
-      const workDir = setupWorkDir(taskId, role);
+      const worktree = setupWorkDir(taskId, role);
+      emitEvent(taskId, {
+        type: 'agent_workspace',
+        taskId,
+        role,
+        worktreePath: worktree.dir,
+        branch: worktree.branch,
+        created: worktree.created,
+      });
 
       // Build prompt — prepend prior context
       const priorContext = state.accumulatedContext.join('\n\n---\n\n');
@@ -650,7 +1271,7 @@ async function orchestrate(taskId: string) {
       ].filter(Boolean).join('\n\n---\n\n');
 
       try {
-        const output = await runAgent(taskId, role, agentPrompt, workDir, state.agentConfig);
+        const output = await runAgent(taskId, role, agentPrompt, worktree.dir, state.agentConfig);
         state.accumulatedContext.push(`## ${role.toUpperCase()}:\n${output}`);
         subtask.status = 'done';
         subtask.progress = 1;

@@ -1,7 +1,12 @@
 node_modules/
 .next/
+.next.bak.*/
 out/
 .env
 .env.local
 *.tsbuildinfo
 next-env.d.ts
+
+# Playwright outputs
+playwright-report/
+test-results/

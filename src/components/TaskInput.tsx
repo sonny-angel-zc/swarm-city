@@ -6,15 +6,25 @@ import { useSwarmStore } from '@/core/store';
 export default function TaskInput() {
   const [input, setInput] = useState('');
   const [expanded, setExpanded] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const submitTask = useSwarmStore(s => s.submitTask);
   const currentTask = useSwarmStore(s => s.currentTask);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim()) return;
-    submitTask(input.trim());
-    setInput('');
-    setExpanded(false);
+    setSubmitError(null);
+    setSubmitting(true);
+    try {
+      await submitTask(input.trim());
+      setInput('');
+      setExpanded(false);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Task submission failed.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -52,13 +62,17 @@ export default function TaskInput() {
             {input && (
               <button
                 type="submit"
-                className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-green-500/20"
+                disabled={submitting}
+                className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-green-500/20"
               >
-                Create Task →
+                {submitting ? 'Creating...' : 'Create Task →'}
               </button>
             )}
           </div>
         </form>
+        {submitError && (
+          <p className="mt-2 text-center text-[11px] text-red-300">{submitError}</p>
+        )}
       </div>
     </div>
   );

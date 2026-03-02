@@ -4,6 +4,13 @@ import { useSwarmStore } from '@/core/store';
 import { BUILDING_CONFIGS } from '@/core/types';
 import DocsPanel from '@/components/DocsPanel';
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
 const statusColors: Record<string, string> = {
   idle: 'bg-gray-500',
   working: 'bg-blue-400 animate-pulse',
@@ -25,6 +32,7 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
   const currentTask = useSwarmStore(s => s.currentTask);
   const notifications = useSwarmStore(s => s.notifications);
   const economy = useSwarmStore(s => s.economy);
+  const decompositionStatus = useSwarmStore(s => s.decompositionStatus);
   const selectAgent = useSwarmStore(s => s.selectAgent);
   const dismissNotification = useSwarmStore(s => s.dismissNotification);
 
@@ -49,30 +57,51 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
         {currentTask ? (
           <div>
             <p className="text-sm text-white/80 font-medium mb-2 truncate">{currentTask.title}</p>
-            <div className="space-y-1.5">
-              {currentTask.subtasks.map(st => (
-                <div key={st.id} className="flex items-center gap-2">
-                  <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-                    st.status === 'done' ? 'bg-green-400' :
-                    st.status === 'in_progress' ? 'bg-blue-400' :
-                    st.status === 'review' ? 'bg-yellow-400' :
-                    'bg-gray-600'
-                  }`} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[11px] text-white/60 truncate">{st.title.split(':')[0]}</div>
-                    {st.status === 'in_progress' && (
-                      <div className="w-full h-1 bg-[#161b22] rounded-full mt-0.5">
-                        <div
-                          className="h-full bg-blue-500 rounded-full transition-all duration-300"
-                          style={{ width: `${st.progress * 100}%` }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                  <span className="text-[10px] text-white/30">{Math.round(st.progress * 100)}%</span>
+            {currentTask.status === 'decomposing' ? (
+              <div className={`rounded-md border px-2 py-2 text-[11px] space-y-1 ${
+                decompositionStatus.stalled ? 'border-orange-400/40 bg-orange-400/10 text-orange-200' : 'border-[#30363d] bg-[#161b22] text-white/60'
+              }`}>
+                <div>Decomposing subtasks... {formatDuration(decompositionStatus.elapsedMs)}</div>
+                <div className="text-[10px]">
+                  Threshold warning at {formatDuration(decompositionStatus.stallThresholdMs)}
                 </div>
-              ))}
-            </div>
+                {decompositionStatus.stalled && (
+                  <div className="text-[10px] text-orange-100">
+                    {decompositionStatus.stallReason ? `Reason: ${decompositionStatus.stallReason}` : 'Reason unavailable.'}
+                  </div>
+                )}
+                {decompositionStatus.stalled && (
+                  <div className="text-[10px] text-orange-100">
+                    Suggested recovery: {decompositionStatus.suggestedAction}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {currentTask.subtasks.map(st => (
+                  <div key={st.id} className="flex items-center gap-2">
+                    <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
+                      st.status === 'done' ? 'bg-green-400' :
+                      st.status === 'in_progress' ? 'bg-blue-400' :
+                      st.status === 'review' ? 'bg-yellow-400' :
+                      'bg-gray-600'
+                    }`} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[11px] text-white/60 truncate">{st.title.split(':')[0]}</div>
+                      {st.status === 'in_progress' && (
+                        <div className="w-full h-1 bg-[#161b22] rounded-full mt-0.5">
+                          <div
+                            className="h-full bg-blue-500 rounded-full transition-all duration-300"
+                            style={{ width: `${st.progress * 100}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-white/30">{Math.round(st.progress * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
           <p className="text-xs text-white/30 italic">No active task. Submit one above.</p>

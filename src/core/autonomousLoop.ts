@@ -1,6 +1,15 @@
-import path from 'path';
-import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType } from './linearServer';
-import { detectRetryKind, executeAutonomousTaskWithCodex, runCodexExec } from './orchestrator';
+import path from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { createLinearIssueServer, getTopTodoIssue, LINEAR_TEAM_ID, listLinearIssues, updateIssueStateByType, type LinearIssue } from './linearServer';
+import {
+  cleanupAutonomousBranchesForClosedIssues,
+  cleanupStaleAutonomousWorktrees,
+  detectRetryKind,
+  executeAutonomousTaskWithCodex,
+  hasActiveCodexProcess,
+  runAutonomousPreflight,
+  runCodexExec,
+} from './orchestrator';
 
 type AutonomousEventType = 'info' | 'error' | 'warning';
 
@@ -34,6 +43,7 @@ export type AutonomousState = {
   events: AutonomousEvent[];
   seeded: boolean;
   lastTickAt: number | null;
+  consecutiveErrors: number;
 };
 
 type Runtime = {
@@ -42,12 +52,23 @@ type Runtime = {
   state: AutonomousState;
   eventId: number;
   lock: boolean;
+  bootRecoveryDone: boolean;
+  consecutiveErrors: number;
 };
 
 const DEFAULT_INTERVAL_MS = Number(process.env.SWARM_AUTONOMOUS_INTERVAL_MS ?? '60000');
 const DEFAULT_COOLDOWN_MS = Number(process.env.SWARM_AUTONOMOUS_COOLDOWN_MS ?? '90000');
 const DEFAULT_ENABLED = (process.env.SWARM_AUTONOMOUS_DEFAULT_ON ?? 'true').toLowerCase() !== 'false';
+const DEFAULT_EXPECTED_TOKENS_PER_TURN = Number(process.env.SWARM_EXPECTED_TOKENS_PER_TURN ?? '250000');
+const ERROR_COOLDOWN_MS = 2 * 60_000;
+const STUCK_STARTED_MAX_AGE_MS = 10 * 60_000;
+const HEALTH_TIMEOUT_MS = Number(process.env.SWARM_DEV_HEALTH_TIMEOUT_MS ?? '3500');
+const HEALTH_POLL_MS = Number(process.env.SWARM_DEV_HEALTH_POLL_MS ?? '3000');
+const HEALTH_RECOVERY_WINDOW_MS = Number(process.env.SWARM_DEV_HEALTH_RECOVERY_WINDOW_MS ?? '45000');
 const PROJECT_ROOT = path.resolve(process.cwd());
+const RUNTIME_DIR = path.join(PROJECT_ROOT, process.env.SWARM_RUNTIME_DIR ?? '.swarm-runtime');
+const DEV_SERVER_RESTART_SIGNAL = path.join(RUNTIME_DIR, process.env.SWARM_DEV_RESTART_SIGNAL ?? 'restart-dev-server.signal');
+const DEV_SERVER_HEALTH_URL = process.env.SWARM_DEV_HEALTH_URL ?? 'http://127.0.0.1:3000/api/autonomous/health';
 
 const SEED_TASKS: Array<{ title: string; description: string; priority: number }> = [
   {
@@ -97,6 +118,7 @@ function createInitialState(): AutonomousState {
     events: [],
     seeded: false,
     lastTickAt: null,
+    consecutiveErrors: 0,
   };
 }
 
@@ -107,6 +129,8 @@ if (!globalRuntime.__swarmAutonomousRuntime) {
     state: createInitialState(),
     eventId: 0,
     lock: false,
+    bootRecoveryDone: false,
+    consecutiveErrors: 0,
   };
 }
 
@@ -121,6 +145,51 @@ function addEvent(message: string, type: AutonomousEventType = 'info') {
     ...rt.state.events,
     { id: rt.eventId, timestamp: Date.now(), type, message },
   ].slice(-300);
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function probeDevServerHealth(): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1_000, HEALTH_TIMEOUT_MS));
+  try {
+    const response = await fetch(DEV_SERVER_HEALTH_URL, {
+      method: 'GET',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function requestDevServerRestartSignal(reason: string): void {
+  mkdirSync(RUNTIME_DIR, { recursive: true });
+  writeFileSync(DEV_SERVER_RESTART_SIGNAL, `${Date.now()} ${reason}\n`, { encoding: 'utf8' });
+}
+
+async function ensureDevServerHealthyBeforeTask(): Promise<boolean> {
+  if (await probeDevServerHealth()) return true;
+
+  addEvent('Dev server health check failed before task; requesting supervised restart.', 'warning');
+  requestDevServerRestartSignal('autonomous-loop-health-check');
+
+  const deadline = Date.now() + Math.max(15_000, HEALTH_RECOVERY_WINDOW_MS);
+  while (Date.now() < deadline) {
+    await delay(Math.max(1_000, HEALTH_POLL_MS));
+    if (await probeDevServerHealth()) {
+      addEvent('Dev server recovered after supervised restart signal.');
+      return true;
+    }
+  }
+
+  addEvent('Dev server remained unhealthy after restart attempt; deferring task tick.', 'warning');
+  return false;
 }
 
 function toPriorityValue(priority: string): number {
@@ -151,6 +220,7 @@ async function generateImprovements(summary: string): Promise<Array<{ title: str
     workDir: PROJECT_ROOT,
     model: process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex',
     sandbox: 'read-only',
+    isolatedContext: true,
   });
 
   if (res.code !== 0) return [];
@@ -197,6 +267,61 @@ export async function seedAutonomousBacklog(): Promise<{ created: number; skippe
   return { created, skipped };
 }
 
+async function recoverStuckStartedIssues(issues: LinearIssue[]): Promise<void> {
+  const cutoff = Date.now() - STUCK_STARTED_MAX_AGE_MS;
+  const stuck = issues.filter((issue) => {
+    if (issue.state?.type !== 'started') return false;
+    const updatedAt = new Date(issue.updatedAt).getTime();
+    return Number.isFinite(updatedAt) && updatedAt < cutoff;
+  });
+  if (stuck.length === 0) return;
+
+  if (hasActiveCodexProcess()) {
+    addEvent(`Skipped stuck-task recovery (${stuck.length} candidate issue(s)); Codex process is active.`);
+    return;
+  }
+
+  let reset = 0;
+  for (const issue of stuck) {
+    const ok = await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
+    if (ok) reset += 1;
+  }
+
+  if (reset > 0) {
+    addEvent(`Recovered ${reset} stuck started issue(s) back to unstarted.`);
+  }
+}
+
+async function runBootRecoveryIfNeeded(): Promise<void> {
+  const rt = runtime();
+  if (rt.bootRecoveryDone) return;
+  rt.bootRecoveryDone = true;
+
+  addEvent('Running boot recovery checks.');
+
+  const stale = cleanupStaleAutonomousWorktrees(PROJECT_ROOT);
+  if (stale.removed > 0 || stale.errors > 0) {
+    addEvent(
+      `Worktree cleanup: removed=${stale.removed}, skipped=${stale.skipped}, errors=${stale.errors}.`,
+      stale.errors > 0 ? 'warning' : 'info',
+    );
+  }
+
+  const issues = await listLinearIssues(LINEAR_TEAM_ID);
+  await recoverStuckStartedIssues(issues);
+
+  const closedIssueIds = issues
+    .filter((issue) => issue.state?.type === 'completed' || issue.state?.type === 'canceled')
+    .map((issue) => issue.identifier);
+  const branchCleanup = cleanupAutonomousBranchesForClosedIssues(closedIssueIds, PROJECT_ROOT);
+  if (branchCleanup.deleted > 0 || branchCleanup.errors > 0) {
+    addEvent(
+      `Branch cleanup: deleted=${branchCleanup.deleted}, skipped=${branchCleanup.skipped}, errors=${branchCleanup.errors}.`,
+      branchCleanup.errors > 0 ? 'warning' : 'info',
+    );
+  }
+}
+
 async function tickLoop() {
   const rt = runtime();
   if (!rt.state.enabled || rt.lock) return;
@@ -218,6 +343,8 @@ async function tickLoop() {
   rt.state.running = true;
 
   try {
+    await runBootRecoveryIfNeeded();
+
     if (!rt.state.seeded) {
       const seed = await seedAutonomousBacklog();
       rt.state.seeded = true;
@@ -230,12 +357,28 @@ async function tickLoop() {
       return;
     }
 
+    const healthOk = await ensureDevServerHealthyBeforeTask();
+    if (!healthOk) {
+      rt.state.currentTask = null;
+      return;
+    }
+
     rt.state.currentTask = {
       issueId: issue.id,
       identifier: issue.identifier,
       title: issue.title,
     };
     addEvent(`Picked ${issue.identifier}: ${issue.title}`);
+
+    const preflight = runAutonomousPreflight(PROJECT_ROOT);
+    if (preflight.noCommitMode) {
+      addEvent(
+        `[preflight] Constraints detected; switching to no-commit mode: ${preflight.constraints.join(' | ')}`,
+        'warning',
+      );
+    } else {
+      addEvent('[preflight] Passed (.git writable and lockfile updates feasible).');
+    }
 
     const started = await updateIssueStateByType(issue.id, 'started', LINEAR_TEAM_ID);
     if (!started) {
@@ -246,9 +389,20 @@ async function tickLoop() {
     const execution = await executeAutonomousTaskWithCodex({
       title: issue.title,
       description: issue.description,
+      issueIdentifier: issue.identifier,
       workDir: PROJECT_ROOT,
       model: process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex',
+      preflight,
     });
+
+    const tokenSummary = `input=${execution.usage.inputTokens.toLocaleString()}, output=${execution.usage.outputTokens.toLocaleString()}, total=${execution.usage.totalTokens.toLocaleString()}`;
+    addEvent(`[telemetry] Codex isolated context for ${issue.identifier} (${execution.usage.model}); ${tokenSummary}`);
+    if (execution.usage.totalTokens > Math.max(1, DEFAULT_EXPECTED_TOKENS_PER_TURN)) {
+      addEvent(
+        `[telemetry] Token usage exceeded expected turn budget (${execution.usage.totalTokens.toLocaleString()} > ${DEFAULT_EXPECTED_TOKENS_PER_TURN.toLocaleString()}).`,
+        'warning',
+      );
+    }
 
     for (const restart of execution.restarts) {
       addEvent(`[restart] ${restart}`, 'warning');
@@ -302,11 +456,34 @@ async function tickLoop() {
     if (generatedCount > 0) {
       addEvent(`Generated ${generatedCount} follow-up improvement task(s).`);
     }
-  } catch (err) {
-    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
   } finally {
     rt.state.running = false;
+    rt.state.currentTask = null;
     rt.lock = false;
+  }
+}
+
+async function tickLoopSafe() {
+  const rt = runtime();
+  try {
+    await tickLoop();
+    if (rt.consecutiveErrors > 0) {
+      rt.consecutiveErrors = 0;
+      rt.state.consecutiveErrors = 0;
+    }
+  } catch (err) {
+    rt.consecutiveErrors += 1;
+    rt.state.consecutiveErrors = rt.consecutiveErrors;
+    addEvent(`Autonomous loop error: ${String(err)}`, 'error');
+
+    if (rt.consecutiveErrors >= 3) {
+      rt.state.paused = true;
+      rt.state.cooldownUntil = Date.now() + ERROR_COOLDOWN_MS;
+      rt.state.pauseReason = 'Repeated loop failures; cooling down before automatic resume.';
+      addEvent('Paused autonomous loop for 120s after 3 consecutive tick errors.', 'warning');
+      rt.consecutiveErrors = 0;
+      rt.state.consecutiveErrors = 0;
+    }
   }
 }
 
@@ -317,8 +494,8 @@ export function startAutonomousLoop() {
   addEvent('Autonomous loop booted.');
 
   if (!rt.state.enabled) return;
-  void tickLoop();
-  rt.timer = setInterval(() => { void tickLoop(); }, rt.state.intervalMs);
+  void tickLoopSafe();
+  rt.timer = setInterval(() => { void tickLoopSafe(); }, rt.state.intervalMs);
 }
 
 function restartTimer() {
@@ -328,7 +505,7 @@ function restartTimer() {
     rt.timer = null;
   }
   if (!rt.state.enabled) return;
-  rt.timer = setInterval(() => { void tickLoop(); }, rt.state.intervalMs);
+  rt.timer = setInterval(() => { void tickLoopSafe(); }, rt.state.intervalMs);
 }
 
 export function setAutonomousEnabled(enabled: boolean) {
@@ -340,7 +517,7 @@ export function setAutonomousEnabled(enabled: boolean) {
     rt.state.cooldownUntil = null;
     rt.state.pauseReason = null;
     restartTimer();
-    void tickLoop();
+    void tickLoopSafe();
   } else {
     addEvent('Autonomous mode paused by user.', 'warning');
     if (rt.timer) {
@@ -360,5 +537,41 @@ export function getAutonomousState(sinceEventId?: number): AutonomousState {
     events,
     completedTasks: [...state.completedTasks],
     currentTask: state.currentTask ? { ...state.currentTask } : null,
+  };
+}
+
+export function getAutonomousHealth(): {
+  ok: boolean;
+  stale: boolean;
+  now: number;
+  lastTickAt: number | null;
+  lastTickAgeMs: number | null;
+  intervalMs: number;
+  paused: boolean;
+  enabled: boolean;
+  running: boolean;
+  consecutiveErrors: number;
+} {
+  const state = runtime().state;
+  const now = Date.now();
+  const lastTickAgeMs = state.lastTickAt ? Math.max(0, now - state.lastTickAt) : null;
+  const stale = Boolean(
+    state.enabled
+      && !state.paused
+      && lastTickAgeMs !== null
+      && lastTickAgeMs > Math.max(30_000, state.intervalMs * 3),
+  );
+
+  return {
+    ok: !stale,
+    stale,
+    now,
+    lastTickAt: state.lastTickAt,
+    lastTickAgeMs,
+    intervalMs: state.intervalMs,
+    paused: state.paused,
+    enabled: state.enabled,
+    running: state.running,
+    consecutiveErrors: state.consecutiveErrors,
   };
 }
