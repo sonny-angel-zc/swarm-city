@@ -56,6 +56,11 @@ Smoke tests use these environment variables when starting Next.js and building P
   - `listen`: current local default behavior. If no server is running, preflight temporarily starts `next dev` to verify startup/readiness.
   - `check`: preflight requires an already-running server and does not start one.
   - `skip`: preflight skips all server readiness checks (non-listening mode for restricted sandboxes).
+- Dirty-worktree bypass (default: disabled)
+  - CLI: `--allow-dirty`
+  - Env: `SMOKE_ALLOW_DIRTY_WORKTREE=1` (also accepts `true`, `yes`, `on`)
+  - Purpose: bypasses only the clean-repo gate in preflight. All other checks still run.
+  - Use only in controlled environments (for example ephemeral CI workspaces or throwaway isolated worktrees), not for normal local development.
 
 Example:
 
@@ -69,6 +74,12 @@ Restricted environment preflight-only example (no port binding attempt):
 SMOKE_PREFLIGHT_MODE=skip npm run test:smoke:preflight
 ```
 
+Controlled CI bypass example:
+
+```bash
+SMOKE_ALLOW_DIRTY_WORKTREE=1 npm run test:smoke:preflight
+```
+
 ## Troubleshooting
 
 - `Executable doesn't exist` or browser launch failures:
@@ -80,6 +91,7 @@ SMOKE_PREFLIGHT_MODE=skip npm run test:smoke:preflight
   - Commit, stash, or discard local modified/deleted files.
   - Clean untracked files you do not need.
   - Re-run after `git status --short` shows no output.
+  - If you intentionally run in a controlled dirty workspace, opt in explicitly with `--allow-dirty` or `SMOKE_ALLOW_DIRTY_WORKTREE=1`.
 - Preflight fails on invalid `SMOKE_HOST`/`SMOKE_PORT`:
   - Use a host without spaces and a port in the `1-65535` range.
 - Port `3000` already in use:

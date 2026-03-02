@@ -62,6 +62,18 @@ function runPreflight(cwd, extraEnv = {}) {
   });
 }
 
+function runPreflightWithArgs(cwd, args = [], extraEnv = {}) {
+  return spawnSync(process.execPath, [SCRIPT_PATH, ...args], {
+    cwd,
+    encoding: 'utf-8',
+    env: {
+      ...process.env,
+      SMOKE_PREFLIGHT_MODE: 'skip',
+      ...extraEnv,
+    },
+  });
+}
+
 test('passes preflight in clean repository', () => {
   const repo = createRepo({ includeDependencies: true, dirty: false });
   const result = runPreflight(repo);
@@ -84,4 +96,20 @@ test('fails preflight when worktree is dirty', () => {
 
   assert.equal(result.status, 1, result.stdout);
   assert.match(result.stderr, /Dirty worktree detected/);
+});
+
+test('allows dirty worktree with --allow-dirty flag', () => {
+  const repo = createRepo({ includeDependencies: true, dirty: true });
+  const result = runPreflightWithArgs(repo, ['--allow-dirty']);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Dirty worktree bypass enabled/);
+});
+
+test('allows dirty worktree with SMOKE_ALLOW_DIRTY_WORKTREE env var', () => {
+  const repo = createRepo({ includeDependencies: true, dirty: true });
+  const result = runPreflight(repo, { SMOKE_ALLOW_DIRTY_WORKTREE: '1' });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /Dirty worktree bypass enabled/);
 });

@@ -10,6 +10,7 @@ const START_TIMEOUT_MS = 45_000;
 const POLL_INTERVAL_MS = 1_000;
 const REQUEST_TIMEOUT_MS = 2_500;
 const PREFLIGHT_MODES = new Set(['listen', 'check', 'skip']);
+const ALLOW_DIRTY_FLAG = '--allow-dirty';
 
 function log(message) {
   console.log(`[smoke:preflight] ${message}`);
@@ -21,6 +22,27 @@ function fail(message, hint) {
     console.error(`[smoke:preflight] HINT: ${hint}`);
   }
   process.exit(1);
+}
+
+function parseBooleanEnv(value) {
+  if (value === undefined) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function parseRuntimeOptions(argv = process.argv.slice(2), env = process.env) {
+  for (const arg of argv) {
+    if (arg !== ALLOW_DIRTY_FLAG) {
+      fail(
+        `Unknown argument: "${arg}".`,
+        `Supported flags: ${ALLOW_DIRTY_FLAG}`,
+      );
+    }
+  }
+
+  return {
+    allowDirtyWorktree: argv.includes(ALLOW_DIRTY_FLAG) || parseBooleanEnv(env.SMOKE_ALLOW_DIRTY_WORKTREE),
+  };
 }
 
 function parseSmokeConfig() {
@@ -126,7 +148,7 @@ function parseWorktreeChanges(lines) {
   return summary;
 }
 
-function ensureCleanWorktree() {
+function ensureCleanWorktree({ allowDirtyWorktree }) {
   const result = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], {
     stdio: 'pipe',
     encoding: 'utf-8',
@@ -145,6 +167,13 @@ function ensureCleanWorktree() {
     .filter(Boolean);
 
   if (lines.length === 0) {
+    return;
+  }
+
+  if (allowDirtyWorktree) {
+    log(
+      `Dirty worktree bypass enabled via ${ALLOW_DIRTY_FLAG}/SMOKE_ALLOW_DIRTY_WORKTREE; continuing with ${lines.length} local change(s).`,
+    );
     return;
   }
 
@@ -283,6 +312,7 @@ async function assertServerReadiness({ host, port, baseUrl, preflightMode }) {
 }
 
 async function main() {
+  const runtime = parseRuntimeOptions();
   const { host, port, preflightMode, baseUrl } = parseSmokeConfig();
 
   ensureNodeVersion();
@@ -290,12 +320,14 @@ async function main() {
   ensureCommand('npx');
   ensureCommand('node');
   ensureCommand('git');
-  ensureCleanWorktree();
+  ensureCleanWorktree(runtime);
 
   ensureDependencyInstalled('node_modules/next/package.json', 'next');
   ensureDependencyInstalled('node_modules/@playwright/test/package.json', '@playwright/test');
 
-  log(`Config: SMOKE_HOST=${host}, SMOKE_PORT=${port}, SMOKE_PREFLIGHT_MODE=${preflightMode}`);
+  log(
+    `Config: SMOKE_HOST=${host}, SMOKE_PORT=${port}, SMOKE_PREFLIGHT_MODE=${preflightMode}, ALLOW_DIRTY_WORKTREE=${runtime.allowDirtyWorktree}`,
+  );
   await assertServerReadiness({ host, port, baseUrl, preflightMode });
   log('Preflight checks passed.');
 }
