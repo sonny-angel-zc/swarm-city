@@ -110,6 +110,7 @@ type SwarmStore = {
   tick: (dt: number) => void;
   sendMessage: (agentRole: AgentRole, message: string) => void;
   setCameraPos: (x: number, y: number) => void;
+  panCamera: (dx: number, dy: number) => void;
   setZoom: (z: number) => void;
   dismissNotification: (id: string) => void;
   processSSEEvent: (event: SSEEvent) => void;
@@ -1229,6 +1230,7 @@ docsRegistry: getPlanRegistry(),
   },
 
   setCameraPos: (x, y) => set({ cameraX: x, cameraY: y }),
+  panCamera: (dx, dy) => set((s) => ({ cameraX: s.cameraX + dx, cameraY: s.cameraY + dy })),
   setZoom: (z) => set({ zoom: Math.max(0.3, Math.min(2.5, z)) }),
   dismissNotification: (id) =>
     set({ notifications: get().notifications.map(n => n.id === id ? { ...n, read: true } : n) }),

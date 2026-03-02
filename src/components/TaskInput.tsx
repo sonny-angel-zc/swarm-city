@@ -57,13 +57,13 @@ export default function TaskInput() {
               onFocus={() => setExpanded(true)}
               onBlur={() => !input && setExpanded(false)}
               placeholder="What should the swarm build?"
-              className="w-full bg-[#0d1117]/90 backdrop-blur-xl border border-[#1e2a3a] group-hover:border-[#30363d] rounded-xl px-5 py-3.5 text-sm text-white/90 placeholder-white/25 focus:outline-none focus:border-[#58a6ff]/50 focus:ring-1 focus:ring-[#58a6ff]/20 transition-all shadow-2xl shadow-black/50"
+              className="w-full bg-[var(--bg-panel)] backdrop-blur-xl border border-[var(--border-subtle)] group-hover:border-[var(--accent-primary)] rounded-xl px-5 py-3.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-all shadow-2xl shadow-black/50"
             />
             {input && (
               <button
                 type="submit"
                 disabled={submitting}
-                className="absolute right-2 top-1/2 -translate-y-1/2 bg-[#238636] hover:bg-[#2ea043] disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-green-500/20"
+                className="absolute right-2 top-1/2 -translate-y-1/2 bg-[var(--accent-success)] hover:brightness-110 disabled:opacity-60 disabled:cursor-not-allowed text-[var(--text-inverse)] text-xs font-semibold px-4 py-2 rounded-lg transition-all hover:shadow-lg hover:shadow-green-500/20"
               >
                 {submitting ? 'Creating...' : 'Create Task →'}
               </button>

@@ -473,6 +473,7 @@ export default function CityCanvas() {
   const selectAgent = useSwarmStore(s => s.selectAgent);
   const spawnParticles = useSwarmStore(s => s.spawnParticles);
   const setCameraPos = useSwarmStore(s => s.setCameraPos);
+  const panCamera = useSwarmStore(s => s.panCamera);
   const setZoom = useSwarmStore(s => s.setZoom);
 
   // Track coins tossed into the fountain
@@ -1207,8 +1208,7 @@ export default function CityCanvas() {
     const totalDx = e.clientX - dragStartRef.current.x;
     const totalDy = e.clientY - dragStartRef.current.y;
     if (Math.abs(totalDx) + Math.abs(totalDy) > 5) mouseRef.current.dragging = true;
-    const s = storeRef.current;
-    setCameraPos(s.cameraX + dx, s.cameraY + dy);
+    panCamera(dx, dy);
     mouseRef.current.lastX = e.clientX;
     mouseRef.current.lastY = e.clientY;
   };
@@ -1243,8 +1243,7 @@ export default function CityCanvas() {
       const totalDx = t.clientX - dragStartRef.current.x;
       const totalDy = t.clientY - dragStartRef.current.y;
       if (Math.abs(totalDx) + Math.abs(totalDy) > 5) mouseRef.current.dragging = true;
-      const s = storeRef.current;
-      setCameraPos(s.cameraX + dx, s.cameraY + dy);
+      panCamera(dx, dy);
       mouseRef.current.lastX = t.clientX;
       mouseRef.current.lastY = t.clientY;
     } else if (e.touches.length === 2) {
@@ -1259,8 +1258,7 @@ export default function CityCanvas() {
         setZoom(storeRef.current.zoom * scale);
         const panDx = midX - touchRef.current.lastX;
         const panDy = midY - touchRef.current.lastY;
-        const s = storeRef.current;
-        setCameraPos(s.cameraX + panDx, s.cameraY + panDy);
+        panCamera(panDx, panDy);
       }
       touchRef.current.lastDist = dist;
       touchRef.current.lastX = midX;

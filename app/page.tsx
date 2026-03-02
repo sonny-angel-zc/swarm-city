@@ -63,8 +63,8 @@ export default function Home() {
 
   if (bootLoading) {
     return (
-      <div className="h-[100dvh] flex items-center justify-center bg-[#0a0e1a] text-white/70">
-        <div className="rounded-lg border border-[#1e2a3a] bg-[#0d1117] px-4 py-3 text-sm">
+      <div className="h-[100dvh] flex items-center justify-center bg-[var(--bg-canvas)] text-[var(--text-secondary)]">
+        <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-4 py-3 text-sm">
           Loading swarm control plane...
         </div>
       </div>
@@ -121,7 +121,8 @@ export default function Home() {
         {sidebarOpen && (
           <>
             <div
-              className="md:hidden fixed inset-0 bg-black/60 z-30"
+              className="md:hidden fixed inset-0 z-30"
+              style={{ background: 'var(--overlay-backdrop)' }}
               onClick={() => setSidebarOpen(false)}
             />
             <div className="md:hidden fixed right-0 top-0 bottom-0 z-40 w-80 max-w-[85vw]">

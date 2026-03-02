@@ -1,5 +1,53 @@
 @import "tailwindcss";
 
+:root {
+  color-scheme: dark;
+  --bg-canvas: #0a0e1a;
+  --bg-panel: #0d1117;
+  --bg-panel-muted: #121826;
+  --border-subtle: #1e2a3a;
+  --text-primary: #f8fbff;
+  --text-secondary: #a7b4c8;
+  --text-inverse: #0b1020;
+  --accent-primary: #38bdf8;
+  --accent-success: #22c55e;
+  --accent-warning: #f59e0b;
+  --accent-danger: #ef4444;
+  --overlay-backdrop: rgba(0, 0, 0, 0.6);
+  --scrollbar-thumb: rgba(167, 180, 200, 0.22);
+  --scrollbar-thumb-hover: rgba(167, 180, 200, 0.35);
+  --theme-toggle-bg: #0f172a;
+  --theme-toggle-border: rgba(100, 116, 139, 0.7);
+  --theme-toggle-text: #f1f5f9;
+  --theme-toggle-icon-bg: #334155;
+  --theme-toggle-icon-text: #f8fafc;
+  --theme-toggle-indicator: #7dd3fc;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg-canvas: #eef3ff;
+  --bg-panel: #ffffff;
+  --bg-panel-muted: #f4f7ff;
+  --border-subtle: #d3deee;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-inverse: #ffffff;
+  --accent-primary: #0ea5e9;
+  --accent-success: #16a34a;
+  --accent-warning: #d97706;
+  --accent-danger: #dc2626;
+  --overlay-backdrop: rgba(15, 23, 42, 0.25);
+  --scrollbar-thumb: rgba(75, 85, 99, 0.25);
+  --scrollbar-thumb-hover: rgba(75, 85, 99, 0.38);
+  --theme-toggle-bg: #f8fafc;
+  --theme-toggle-border: #cbd5e1;
+  --theme-toggle-text: #1f2937;
+  --theme-toggle-icon-bg: #fef3c7;
+  --theme-toggle-icon-text: #b45309;
+  --theme-toggle-indicator: #0284c7;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -11,6 +59,11 @@ html, body {
   overflow: hidden;
 }
 
+body {
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 4px;
@@ -19,11 +72,11 @@ html, body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.1);
+  background: var(--scrollbar-thumb);
   border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255,255,255,0.2);
+  background: var(--scrollbar-thumb-hover);
 }
 
 @keyframes swarmPulse {

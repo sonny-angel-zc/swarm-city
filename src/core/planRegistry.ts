@@ -73,6 +73,23 @@ const DOCS_SEED: PlanDocument[] = [
     ].join('\n'),
   },
   {
+    id: 'dashboard-theme-requirements',
+    title: 'Dashboard Theme Requirements (SWA-63)',
+    path: 'docs/references/dashboard-theme-requirements.md',
+    category: 'reference',
+    track: 'foundation',
+    updatedAt: '2026-03-02',
+    summary: 'Defines light/dark tokens, default dark behavior, toggle state transitions, and persistence rules.',
+    tags: ['theme', 'dark-mode', 'dashboard', 'ui', 'swa-63'],
+    content: [
+      'SWA-63 subtask defines baseline dashboard theming states and requirements.',
+      '- Theme options are dark and light with dark as default.',
+      '- Persist user-selected theme to localStorage using swarm:theme key.',
+      '- Initial load uses dark first, then applies valid stored preference after hydration.',
+      '- Toggle behavior is binary and idempotent per interaction.',
+    ].join('\n'),
+  },
+  {
     id: 'connect-your-tools-guide',
     title: 'Connect Your Tools Guide',
     path: 'docs/guides/connect-your-tools.md',

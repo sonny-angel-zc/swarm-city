@@ -39,17 +39,17 @@ export default function ProviderHealth() {
 
   return (
     <div className="hidden lg:flex items-center gap-2">
-      <div className="px-2 py-1 rounded-md border border-[#30363d] bg-[#161b22] text-[10px] text-white/55">
+      <div className="px-2 py-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel-muted)] text-[10px] text-[var(--text-secondary)]">
         {activeModel ? `${activeModel.label}` : 'No model selected'}
       </div>
       {rows.map(({ provider, entry, retryIn }) => (
-        <div key={provider} className="px-2 py-1 rounded-md border border-[#30363d] bg-[#161b22] min-w-[108px]">
+        <div key={provider} className="px-2 py-1 rounded-md border border-[var(--border-subtle)] bg-[var(--bg-panel-muted)] min-w-[108px]">
           <div className="flex items-center gap-1.5">
             <span className={`w-2 h-2 rounded-full ${statusClasses[entry.status]}`} />
-            <span className="text-[10px] text-white/70">{providerLabel[provider]}</span>
-            <span className="text-[9px] uppercase tracking-wide text-white/35 ml-auto">{entry.status}</span>
+            <span className="text-[10px] text-[var(--text-primary)]">{providerLabel[provider]}</span>
+            <span className="text-[9px] uppercase tracking-wide text-[var(--text-secondary)] ml-auto">{entry.status}</span>
           </div>
-          <div className="text-[9px] text-white/40 mt-0.5 truncate">
+          <div className="text-[9px] text-[var(--text-secondary)] mt-0.5 truncate">
             {retryIn ? `retry in ${retryIn}s` : `ok ${entry.successCount} / fail ${entry.failureCount}`}
           </div>
         </div>
