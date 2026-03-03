@@ -6,11 +6,11 @@ type Tile = { x: number; y: number };
 type ParkCorner = 'nw' | 'ne' | 'sw' | 'se';
 
 const ROAD_NETWORK_SPEC = {
-  // 0-indexed engine coordinates: these map to rows/cols 6-7 in a 1-indexed design spec.
-  mainRows: [7, 8],
-  mainCols: [7, 8],
-  outerRows: [3, 4, 11, 12],
-  outerCols: [3, 4, 11, 12],
+  // 0-indexed engine coordinates for a 24x24 grid (center at 11.5).
+  mainRows: [11, 12],
+  mainCols: [11, 12],
+  outerRows: [4, 5, 18, 19],
+  outerCols: [4, 5, 18, 19],
 } as const;
 
 const MAIN_ROAD_ROWS = ROAD_NETWORK_SPEC.mainRows;
@@ -18,8 +18,8 @@ const MAIN_ROAD_COLS = ROAD_NETWORK_SPEC.mainCols;
 const OUTER_ROAD_ROWS = ROAD_NETWORK_SPEC.outerRows;
 const OUTER_ROAD_COLS = ROAD_NETWORK_SPEC.outerCols;
 
-const BRIDGE_COLS = [3, 4, 7, 8, 11, 12];
-const BRIDGE_ROWS = [3, 4, 7, 8, 11, 12];
+const BRIDGE_COLS = [4, 5, 11, 12, 18, 19];
+const BRIDGE_ROWS = [4, 5, 11, 12, 18, 19];
 
 const CARDINAL_STEPS: Tile[] = [
   { x: 1, y: 0 },

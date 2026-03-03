@@ -300,9 +300,9 @@ export type Notification = {
 // Isometric constants
 export const TILE_WIDTH = 64;
 export const TILE_HEIGHT = 38; // ~0.6 ratio
-export const GRID_SIZE = 16;
+export const GRID_SIZE = 24;
 
-// Building definitions
+// Building definitions — positioned in the central government plaza (center of 24x24 grid)
 export const BUILDING_CONFIGS: BuildingConfig[] = [
   {
     role: 'pm',
@@ -311,7 +311,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#F5A623',
     accent: '#FDD835',
     dark: '#C17900',
-    gridX: 7, gridY: 7,
+    gridX: 11, gridY: 11,
     width: 2, height: 90,
     description: 'Decomposes tasks, assigns work, tracks progress',
     icon: '🏛️',
@@ -323,7 +323,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#4A90D9',
     accent: '#64B5F6',
     dark: '#1565C0',
-    gridX: 3, gridY: 4,
+    gridX: 7, gridY: 8,
     width: 2, height: 75,
     description: 'Writes code, implements features',
     icon: '🏗️',
@@ -335,7 +335,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#9C27B0',
     accent: '#CE93D8',
     dark: '#6A1B9A',
-    gridX: 11, gridY: 4,
+    gridX: 15, gridY: 8,
     width: 2, height: 70,
     description: 'UI/UX decisions, visual design specs',
     icon: '🎨',
@@ -347,7 +347,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#4CAF50',
     accent: '#81C784',
     dark: '#2E7D32',
-    gridX: 3, gridY: 10,
+    gridX: 7, gridY: 14,
     width: 2, height: 65,
     description: 'Tests implementations, reports bugs',
     icon: '🔬',
@@ -359,7 +359,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#E53935',
     accent: '#EF5350',
     dark: '#B71C1C',
-    gridX: 11, gridY: 10,
+    gridX: 15, gridY: 14,
     width: 1, height: 95,
     description: 'Challenges assumptions, finds flaws',
     icon: '🗼',
@@ -371,7 +371,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#00897B',
     accent: '#4DB6AC',
     dark: '#00695C',
-    gridX: 5, gridY: 2,
+    gridX: 9, gridY: 6,
     width: 2, height: 70,
     description: 'Reviews PRs, approves/rejects work',
     icon: '⚖️',
@@ -383,7 +383,7 @@ export const BUILDING_CONFIGS: BuildingConfig[] = [
     color: '#FF7043',
     accent: '#FFAB91',
     dark: '#D84315',
-    gridX: 9, gridY: 2,
+    gridX: 13, gridY: 6,
     width: 2, height: 65,
     description: 'Gathers context, reads docs, researches solutions',
     icon: '📚',

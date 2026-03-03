@@ -19,12 +19,14 @@ export type DistrictZone = {
   buildingSlots: Array<{ x: number; y: number }>; // available spots for task buildings
 };
 
-// The 4 district quadrants (avoiding roads, water, agent buildings)
+// The 4 district quadrants — 8x8 tiles each, in the 24x24 grid corners
+// Center district (agent buildings) occupies roughly tiles 6-17 in both axes
+// NW = Core Architecture, NE = Dashboard & UX, SW = Observability, SE = Self-Improvement
 const DISTRICT_QUADRANTS = [
-  { id: 'nw', bounds: { x1: 0, y1: 0, x2: 5, y2: 5 }, defaultColor: '#4A90D9' },
-  { id: 'ne', bounds: { x1: 10, y1: 0, x2: 15, y2: 5 }, defaultColor: '#9C27B0' },
-  { id: 'sw', bounds: { x1: 0, y1: 10, x2: 5, y2: 15 }, defaultColor: '#4CAF50' },
-  { id: 'se', bounds: { x1: 10, y1: 10, x2: 15, y2: 15 }, defaultColor: '#F5A623' },
+  { id: 'nw', bounds: { x1: 0, y1: 0, x2: 7, y2: 7 }, defaultColor: '#2563EB' },
+  { id: 'ne', bounds: { x1: 16, y1: 0, x2: 23, y2: 7 }, defaultColor: '#7C3AED' },
+  { id: 'sw', bounds: { x1: 0, y1: 16, x2: 7, y2: 23 }, defaultColor: '#059669' },
+  { id: 'se', bounds: { x1: 16, y1: 16, x2: 23, y2: 23 }, defaultColor: '#D97706' },
 ] as const;
 
 const keyOf = (x: number, y: number): TileKey => `${x},${y}`;

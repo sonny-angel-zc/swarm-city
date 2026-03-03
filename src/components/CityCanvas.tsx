@@ -70,26 +70,34 @@ const POWER_EDGES: PowerEdge[] = [
   { from: 'researcher', to: 'reviewer' },
 ];
 
-// Decorative buildings (small filler) with sprite assignments
+// Decorative buildings (small filler) with sprite assignments — positions for 24x24 grid
 type DecoBuilding = { gx: number; gy: number; h: number; color: string; sprite: string; scale: number; alpha?: number };
 const DECO_BUILDINGS: DecoBuilding[] = [
+  // NW corner cluster
   { gx: 1, gy: 1, h: 20, color: '#1a2744', sprite: DECO_SPRITES[0], scale: 0.7 },
   { gx: 2, gy: 1, h: 15, color: '#1c2840', sprite: DECO_SPRITES[1], scale: 0.65 },
   { gx: 1, gy: 2, h: 25, color: '#192540', sprite: DECO_SPRITES[2], scale: 0.6 },
-  { gx: 13, gy: 1, h: 18, color: '#1a2744', sprite: DECO_SPRITES[3], scale: 0.65 },
-  { gx: 14, gy: 2, h: 22, color: '#1c2840', sprite: DECO_SPRITES[4], scale: 0.7 },
-  { gx: 1, gy: 13, h: 16, color: '#192540', sprite: NATURE_SPRITES[0], scale: 0.6 },
-  { gx: 2, gy: 14, h: 20, color: '#1a2744', sprite: DECO_SPRITES[5], scale: 0.65 },
-  { gx: 13, gy: 13, h: 24, color: '#1c2840', sprite: DECO_SPRITES[6], scale: 0.7 },
-  { gx: 14, gy: 14, h: 18, color: '#192540', sprite: NATURE_SPRITES[1], scale: 0.6 },
-  { gx: 5, gy: 6, h: 12, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
-  { gx: 6, gy: 5, h: 10, color: '#151d30', sprite: DECO_SPRITES[0], scale: 0.5 },
-  { gx: 9, gy: 6, h: 14, color: '#151d30', sprite: NATURE_SPRITES[0], scale: 0.5 },
-  { gx: 10, gy: 5, h: 11, color: '#151d30', sprite: DECO_SPRITES[2], scale: 0.5 },
-  { gx: 5, gy: 9, h: 13, color: '#151d30', sprite: NATURE_SPRITES[1], scale: 0.5 },
-  { gx: 6, gy: 10, h: 9, color: '#151d30', sprite: DECO_SPRITES[1], scale: 0.45 },
-  { gx: 9, gy: 9, h: 15, color: '#151d30', sprite: DECO_SPRITES[3], scale: 0.5 },
-  { gx: 10, gy: 10, h: 11, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
+  // NE corner cluster
+  { gx: 21, gy: 1, h: 18, color: '#1a2744', sprite: DECO_SPRITES[3], scale: 0.65 },
+  { gx: 22, gy: 2, h: 22, color: '#1c2840', sprite: DECO_SPRITES[4], scale: 0.7 },
+  { gx: 21, gy: 2, h: 16, color: '#192540', sprite: DECO_SPRITES[5], scale: 0.6 },
+  // SW corner cluster
+  { gx: 1, gy: 21, h: 16, color: '#192540', sprite: NATURE_SPRITES[0], scale: 0.6 },
+  { gx: 2, gy: 22, h: 20, color: '#1a2744', sprite: DECO_SPRITES[5], scale: 0.65 },
+  { gx: 1, gy: 22, h: 18, color: '#1c2840', sprite: DECO_SPRITES[6], scale: 0.6 },
+  // SE corner cluster
+  { gx: 21, gy: 21, h: 24, color: '#1c2840', sprite: DECO_SPRITES[6], scale: 0.7 },
+  { gx: 22, gy: 22, h: 18, color: '#192540', sprite: NATURE_SPRITES[1], scale: 0.6 },
+  { gx: 21, gy: 22, h: 20, color: '#1a2744', sprite: DECO_SPRITES[0], scale: 0.65 },
+  // Central plaza surrounds — between agent buildings
+  { gx: 9, gy: 9, h: 12, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
+  { gx: 10, gy: 9, h: 10, color: '#151d30', sprite: DECO_SPRITES[0], scale: 0.5 },
+  { gx: 13, gy: 9, h: 14, color: '#151d30', sprite: NATURE_SPRITES[0], scale: 0.5 },
+  { gx: 14, gy: 9, h: 11, color: '#151d30', sprite: DECO_SPRITES[2], scale: 0.5 },
+  { gx: 9, gy: 13, h: 13, color: '#151d30', sprite: NATURE_SPRITES[1], scale: 0.5 },
+  { gx: 10, gy: 13, h: 9, color: '#151d30', sprite: DECO_SPRITES[1], scale: 0.45 },
+  { gx: 13, gy: 13, h: 15, color: '#151d30', sprite: DECO_SPRITES[3], scale: 0.5 },
+  { gx: 14, gy: 13, h: 11, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
 ];
 
 const SIDEWALK_TILES = new Set<TileKey>([...SIDEWALK_BORDER_TILES, ...PLAZA_TILES]);
@@ -104,7 +112,7 @@ for (let gx = 0; gx < GRID_SIZE; gx++) {
     if (ROAD_TILES.has(key as TileKey) || PLAZA_TILES.has(key as TileKey) || AGENT_TILES.has(key) || STATIC_DECO_TILES.has(key)) continue;
 
     const seed = gx * 37 + gy * 53;
-    const nearCore = gx >= 3 && gx <= 12 && gy >= 3 && gy <= 12;
+    const nearCore = gx >= 7 && gx <= 16 && gy >= 7 && gy <= 16;
     const placeLot = nearCore ? seed % 3 !== 0 : seed % 4 === 0;
     if (!placeLot) continue;
 
