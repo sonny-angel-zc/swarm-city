@@ -131,27 +131,26 @@ function mapProjectContractsFromListPayload(payload: LinearListPayload): LinearP
 const QUERIES = {
   list: `query($teamId: String!) {
     team(id: $teamId) {
-      issues(first: 100, orderBy: updatedAt) {
+      issues(first: 50, orderBy: updatedAt) {
         nodes {
           id identifier title description priority priorityLabel
           state { name type }
-          project { id name description icon color state progress }
+          project { id name }
           assignee { name }
           url
           createdAt updatedAt
           labels { nodes { name color } }
         }
       }
-      projects(first: 100) {
+      projects(first: 20) {
         nodes {
           id
           name
           description
-          icon
           color
           state
           progress
-          issues(first: 250) {
+          issues(first: 50) {
             nodes {
               state { type }
             }

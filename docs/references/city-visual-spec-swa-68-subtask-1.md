@@ -1,8 +1,8 @@
-# City Visual Spec (SWA-68 Subtask 1/12)
+# City Visual Spec (SWA-68 Subtask 1/10)
 
 ## Purpose
 
-Define the source-of-truth visual/technical baseline for isometric roads, sidewalks, trees, parks, vehicles, and water with strict tile precedence, explicit draw order, and frame constraints.
+Define the concise source-of-truth visual baseline for isometric roads, sidewalks, grass variation, trees/parks, vehicles/transit, pedestrians, and water with strict draw order and theme-safe color tokens.
 
 ## Visual Style
 
@@ -12,7 +12,7 @@ Define the source-of-truth visual/technical baseline for isometric roads, sidewa
 
 ## Color Tokens (Light / Dark)
 
-Implementation source: `src/core/cityVisualSpec.ts` (`CITY_TERRAIN_TOKENS`).
+Implementation source: `src/core/cityVisualSpec.ts` (`CITY_TERRAIN_TOKENS`, `CITY_THEME_COLOR_TOKENS`).
 
 | Token | Light | Dark |
 | --- | --- | --- |
@@ -26,8 +26,12 @@ Implementation source: `src/core/cityVisualSpec.ts` (`CITY_TERRAIN_TOKENS`).
 | `city.park.path` | `#c7b289` | `#8c7a5f` |
 | `city.tree.leaf` | `#4f8f4b` | `#3d6e3f` |
 | `city.tree.trunk` | `#8a6548` | `#5e4637` |
+| `city.transit.body` | `#2f80ed` | `#60a5fa` |
+| `city.transit.window` | `#bfdbfe` | `#dbeafe` |
 | `city.vehicle.body` | `#f97316` | `#fb923c` |
 | `city.vehicle.highlight` | `#fde68a` | `#fdba74` |
+| `city.pedestrian.body` | `#374151` | `#cbd5e1` |
+| `city.pedestrian.accent` | `#fb7185` | `#fda4af` |
 | `city.shadow.soft` | `rgba(15, 23, 42, 0.16)` | `rgba(2, 6, 23, 0.45)` |
 
 ## Tile Occupancy Precedence
@@ -63,12 +67,12 @@ Render in this strict order:
 2. `roads`
 3. `sidewalks`
 4. `water`
-5. `parks_trees`
+5. `parks_trees` (`parks/trees`)
 6. `buildings`
-7. `cars_pedestrians`
+7. `cars_pedestrians` (`cars/pedestrians`)
 8. `overlays`
 
-Implementation source: `src/core/cityVisualSpec.ts` (`CITY_LAYER_ORDER`).
+Implementation source: `src/core/cityVisualSpec.ts` (`CITY_LAYER_ORDER`, `CITY_CANVAS_DRAW_ORDER_SPEC`).
 
 ## Constraints
 

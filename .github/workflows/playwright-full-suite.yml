@@ -1,0 +1,88 @@
+name: Playwright Full Suite
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: playwright-full-suite-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright-full-suite:
+    name: playwright-full-suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CI: "1"
+      TZ: UTC
+      NEXT_TELEMETRY_DISABLED: "1"
+      SMOKE_HOST: 127.0.0.1
+      SMOKE_PORT: "3000"
+      PLAYWRIGHT_SKIP_WEBSERVER: "1"
+      PLAYWRIGHT_HTML_REPORT: playwright-report/playwright-full
+      PLAYWRIGHT_JUNIT_OUTPUT_DIR: test-results/playwright-full
+      PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit.xml
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps
+
+      - name: Build app
+        run: npm run build
+
+      - name: Start Next.js app
+        run: |
+          npm run start -- -H "$SMOKE_HOST" -p "$SMOKE_PORT" > next-server.log 2>&1 &
+          echo "NEXT_SERVER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for healthy localhost endpoint
+        run: |
+          set -euo pipefail
+          HEALTHCHECK_URL="http://${SMOKE_HOST}:${SMOKE_PORT}/"
+          for attempt in $(seq 1 60); do
+            if curl --silent --show-error --fail "$HEALTHCHECK_URL" > /dev/null; then
+              echo "Endpoint healthy: $HEALTHCHECK_URL"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Timed out waiting for healthy endpoint: $HEALTHCHECK_URL"
+          tail -n 200 next-server.log || true
+          exit 1
+
+      - name: Run Playwright full suite
+        run: npm run test:e2e:ci -- --reporter=github,line,junit,html --output=test-results/playwright-full
+
+      - name: Stop Next.js app
+        if: always()
+        run: |
+          if [ -n "${NEXT_SERVER_PID:-}" ]; then
+            kill "$NEXT_SERVER_PID" || true
+          fi
+
+      - name: Upload Playwright artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-full-suite-artifacts
+          path: |
+            playwright-report/playwright-full
+            test-results/playwright-full
+            next-server.log
+          if-no-files-found: warn

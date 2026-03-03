@@ -129,6 +129,25 @@ type CityTerrainTokens = {
   softShadow: string;
 };
 
+export type CitySemanticColorToken =
+  | 'city.road.base'
+  | 'city.road.edge'
+  | 'city.sidewalk.base'
+  | 'city.sidewalk.edge'
+  | 'city.water.base'
+  | 'city.water.edge'
+  | 'city.park.base'
+  | 'city.park.path'
+  | 'city.tree.leaf'
+  | 'city.tree.trunk'
+  | 'city.transit.body'
+  | 'city.transit.window'
+  | 'city.vehicle.body'
+  | 'city.vehicle.highlight'
+  | 'city.pedestrian.body'
+  | 'city.pedestrian.accent'
+  | 'city.shadow.soft';
+
 type CityLowPolyElementSpec = {
   element: string;
   silhouette: string;
@@ -216,6 +235,31 @@ export const CITY_TERRAIN_TOKENS: Record<CityThemeMode, CityTerrainTokens> = {
     effectSpark: 'rgba(251, 191, 36, 0.88)',
     softShadow: 'rgba(2, 6, 23, 0.45)',
   },
+};
+
+const toCitySemanticColorTokens = (tokens: CityTerrainTokens): Record<CitySemanticColorToken, string> => ({
+  'city.road.base': tokens.roadBase,
+  'city.road.edge': tokens.roadEdge,
+  'city.sidewalk.base': tokens.sidewalkBase,
+  'city.sidewalk.edge': tokens.sidewalkEdge,
+  'city.water.base': tokens.waterBase,
+  'city.water.edge': tokens.waterEdge,
+  'city.park.base': tokens.parkBase,
+  'city.park.path': tokens.parkPath,
+  'city.tree.leaf': tokens.treeLeaf,
+  'city.tree.trunk': tokens.treeTrunk,
+  'city.transit.body': tokens.transitBody,
+  'city.transit.window': tokens.transitWindow,
+  'city.vehicle.body': tokens.vehicleBody,
+  'city.vehicle.highlight': tokens.vehicleHighlight,
+  'city.pedestrian.body': tokens.pedestrianBody,
+  'city.pedestrian.accent': tokens.pedestrianAccent,
+  'city.shadow.soft': tokens.softShadow,
+});
+
+export const CITY_THEME_COLOR_TOKENS: Record<CityThemeMode, Record<CitySemanticColorToken, string>> = {
+  light: toCitySemanticColorTokens(CITY_TERRAIN_TOKENS.light),
+  dark: toCitySemanticColorTokens(CITY_TERRAIN_TOKENS.dark),
 };
 
 export const CITY_LOW_POLY_STYLE_SPEC: {
@@ -335,6 +379,21 @@ export const CITY_LAYER_ORDER = [
 ] as const;
 
 export type CityLayer = (typeof CITY_LAYER_ORDER)[number];
+
+export const CITY_CANVAS_DRAW_ORDER_SPEC: ReadonlyArray<{
+  id: CityLayer;
+  label: string;
+  intent: string;
+}> = [
+  { id: 'ground', label: 'ground', intent: 'Base terrain fill and grass variation.' },
+  { id: 'roads', label: 'roads', intent: 'Road surfaces, lane language, and intersections.' },
+  { id: 'sidewalks', label: 'sidewalks', intent: 'Sidewalk rings, seams, and curb boundaries.' },
+  { id: 'water', label: 'water', intent: 'Water basins, edges, foam, and shimmer.' },
+  { id: 'parks_trees', label: 'parks/trees', intent: 'Park pads, path accents, and tree props.' },
+  { id: 'buildings', label: 'buildings', intent: 'Building masses and structural shadows.' },
+  { id: 'cars_pedestrians', label: 'cars/pedestrians', intent: 'Dynamic city life motion entities.' },
+  { id: 'overlays', label: 'overlays', intent: 'FX, highlights, labels, and interaction overlays.' },
+] as const;
 
 export const CITY_Z_ORDER_RULES = {
   primary: 'layer rank from CITY_LAYER_ORDER',

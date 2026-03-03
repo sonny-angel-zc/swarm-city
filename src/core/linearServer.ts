@@ -62,7 +62,7 @@ async function linearQuery<T>(query: string, variables?: Record<string, unknown>
 const QUERIES = {
   listIssues: `query($teamId: String!) {
     team(id: $teamId) {
-      issues(first: 100, orderBy: updatedAt) {
+      issues(first: 50, orderBy: updatedAt) {
         nodes {
           id
           identifier
@@ -122,7 +122,7 @@ const QUERIES = {
   }`,
   listProjects: `query($teamId: String!) {
     team(id: $teamId) {
-      projects(first: 100) {
+      projects(first: 20) {
         nodes {
           id
           name
@@ -131,14 +131,11 @@ const QUERIES = {
           color
           state
           progress
-          issues(first: 250) {
+          issues(first: 50) {
             nodes {
               id
               identifier
-              title
-              url
-              updatedAt
-              state { id name type }
+              state { type }
             }
           }
         }
