@@ -5,6 +5,13 @@ import os from 'os';
 import path from 'path';
 import { AgentRole, SubTask, Task } from './types';
 
+const DEFAULT_OPENAI_MODEL = process.env.SWARM_OPENAI_MODEL ?? 'gpt-5.3-codex';
+const DEFAULT_ANTHROPIC_MODEL = process.env.SWARM_ANTHROPIC_MODEL ?? 'sonnet';
+const DEFAULT_PROVIDER: 'anthropic' | 'openai' =
+  (process.env.SWARM_DEFAULT_PROVIDER ?? 'anthropic').toLowerCase() === 'openai'
+    ? 'openai'
+    : 'anthropic';
+
 // ─── SSE Event Types ──────────────────────────────────────────────────────────
 
 export type SSEEvent =
@@ -634,9 +641,10 @@ function runAnthropicAgent(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const fullPrompt = `${AGENT_SYSTEM_PROMPTS[role]}\n\n${prompt}`;
+    const claudeBin = process.env.SWARM_CLAUDE_BIN ?? 'claude';
 
     const proc = spawn(
-      'claude',
+      claudeBin,
       ['-p', '--dangerously-skip-permissions', '--model', model, '--output-format', 'stream-json', '--verbose'],
       { cwd: workDir, env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] },
     );
@@ -646,6 +654,8 @@ function runAnthropicAgent(
 
     let buffer = '';
     let resultText = '';
+    let hadResultError = false;
+    let resultErrorMessage = '';
 
     proc.stdout.on('data', (chunk: Buffer) => {
       buffer += chunk.toString();
@@ -673,6 +683,13 @@ function runAnthropicAgent(
           } else if (event.type === 'result') {
             // Final result — extract text and usage
             resultText = event.result ?? '';
+            const isError = Boolean(event.is_error);
+            if (isError) {
+              hadResultError = true;
+              if (typeof event.result === 'string') {
+                resultErrorMessage = event.result;
+              }
+            }
             const usage = event.usage;
             const costUsd = event.total_cost_usd ?? 0;
             const modelKeys = event.modelUsage ? Object.keys(event.modelUsage) : [];
@@ -716,8 +733,21 @@ function runAnthropicAgent(
           const event = JSON.parse(buffer);
           if (event.type === 'result') {
             resultText = event.result ?? resultText;
+            if (event.is_error) {
+              hadResultError = true;
+              if (typeof event.result === 'string') {
+                resultErrorMessage = event.result;
+              }
+            }
           }
         } catch { /* ignore */ }
+      }
+      const authError = /failed to authenticate|authentication_error|oauth token has expired/i.test(
+        `${resultErrorMessage}\n${resultText}`,
+      );
+      if (hadResultError || authError) {
+        reject(new Error(resultErrorMessage || resultText || `claude exited with code ${code}`));
+        return;
       }
       if (resultText || code === 0) {
         resolve(resultText);
@@ -858,7 +888,7 @@ export async function runCodexExec(params: {
       params.sandbox ?? 'workspace-write',
       '--skip-git-repo-check',
       '--model',
-      params.model ?? 'gpt-5.3-codex',
+      params.model ?? DEFAULT_OPENAI_MODEL,
       params.prompt,
     ];
     if (isolatedContext) args.splice(7, 0, '--ephemeral');
@@ -885,7 +915,7 @@ export async function runCodexExec(params: {
         inputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
-        model: params.model ?? 'gpt-5.3-codex',
+        model: params.model ?? DEFAULT_OPENAI_MODEL,
       };
       for (const line of lines) {
         try {
@@ -914,6 +944,172 @@ export async function runCodexExec(params: {
         usage,
       });
     });
+  });
+}
+
+export async function runAnthropicExec(params: {
+  prompt: string;
+  workDir: string;
+  model?: string;
+}): Promise<CodexExecResult> {
+  return new Promise((resolve, reject) => {
+    const claudeBin = process.env.SWARM_CLAUDE_BIN ?? 'claude';
+    const proc = spawn(
+      claudeBin,
+      ['-p', '--dangerously-skip-permissions', '--model', params.model ?? DEFAULT_ANTHROPIC_MODEL, '--output-format', 'stream-json', '--verbose'],
+      {
+        cwd: params.workDir,
+        env: { ...process.env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      },
+    );
+
+    proc.stdin.write(params.prompt);
+    proc.stdin.end();
+
+    let stdout = '';
+    let stderr = '';
+    let buffer = '';
+    let streamedText = '';
+    let resultText = '';
+    let hadResultError = false;
+    let resultErrorMessage = '';
+    let usage: CodexExecResult['usage'] = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      model: params.model ?? DEFAULT_ANTHROPIC_MODEL,
+    };
+
+    proc.stdout.on('data', (chunk: Buffer) => {
+      const text = chunk.toString();
+      stdout += text;
+      buffer += text;
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          const event = JSON.parse(trimmed) as Record<string, unknown>;
+          if (event.type === 'assistant') {
+            const message = event.message as { content?: Array<{ type?: string; text?: string }> } | undefined;
+            const content = message?.content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block?.type === 'text' && typeof block.text === 'string') {
+                  streamedText += `${block.text}\n`;
+                }
+              }
+            }
+          } else if (event.type === 'result') {
+            const resultValue = event.result;
+            if (typeof resultValue === 'string' && resultValue.trim().length > 0) {
+              resultText = resultValue;
+            }
+            if (event.is_error) {
+              hadResultError = true;
+              if (typeof resultValue === 'string') {
+                resultErrorMessage = resultValue;
+              }
+            }
+            const usageNode = event.usage as Record<string, unknown> | undefined;
+            const inputTokens = typeof usageNode?.input_tokens === 'number' ? usageNode.input_tokens : 0;
+            const outputTokens = typeof usageNode?.output_tokens === 'number' ? usageNode.output_tokens : 0;
+            usage = {
+              inputTokens,
+              outputTokens,
+              totalTokens: inputTokens + outputTokens,
+              model: params.model ?? DEFAULT_ANTHROPIC_MODEL,
+            };
+          }
+        } catch {
+          // Ignore non-JSON streaming lines.
+        }
+      }
+    });
+
+    proc.stderr.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    proc.on('error', (err) => reject(new Error(`failed to launch claude CLI: ${String(err)}`)));
+    proc.on('close', (code) => {
+      if (buffer.trim().length > 0) {
+        try {
+          const event = JSON.parse(buffer.trim()) as Record<string, unknown>;
+          if (event.type === 'result') {
+            const resultValue = event.result;
+            if (typeof resultValue === 'string' && resultValue.trim().length > 0) {
+              resultText = resultValue;
+            }
+            if (event.is_error) {
+              hadResultError = true;
+              if (typeof resultValue === 'string') {
+                resultErrorMessage = resultValue;
+              }
+            }
+          }
+        } catch {
+          // Ignore non-JSON trailing line.
+        }
+      }
+      const text = resultText.trim() || streamedText.trim();
+      const authError = /failed to authenticate|authentication_error|oauth token has expired/i.test(
+        `${resultErrorMessage}\n${text}\n${stderr}`,
+      );
+      const effectiveCode =
+        hadResultError || authError
+          ? (typeof code === 'number' && code !== 0 ? code : 1)
+          : code;
+      resolve({
+        code: effectiveCode,
+        text,
+        stderr: stderr.trim(),
+        stdout: stdout.trim(),
+        usage,
+      });
+    });
+  });
+}
+
+export async function runModelExec(params: {
+  provider: 'anthropic' | 'openai';
+  prompt: string;
+  workDir: string;
+  model?: string;
+  sandbox?: 'read-only' | 'workspace-write';
+  isolatedContext?: boolean;
+}): Promise<CodexExecResult> {
+  if (params.provider === 'anthropic') {
+    const primary = await runAnthropicExec({
+      prompt: params.prompt,
+      workDir: params.workDir,
+      model: params.model,
+    });
+    const allowFallback = (process.env.SWARM_MODEL_EXEC_FALLBACK ?? 'true').toLowerCase() !== 'false';
+    const combined = `${primary.text}\n${primary.stderr}\n${primary.stdout}`;
+    const authFailure = /failed to authenticate|authentication_error|oauth token has expired|401\b/i.test(combined);
+    const modelAccessFailure = /selected model|may not exist|no access to it|invalid model|model .* not found/i.test(combined);
+    const retryKind = detectRetryKind(combined);
+    const shouldFallback = allowFallback && (authFailure || modelAccessFailure || retryKind === 'rate_limit');
+    if (shouldFallback) {
+      return runCodexExec({
+        prompt: params.prompt,
+        workDir: params.workDir,
+        model: process.env.SWARM_OPENAI_MODEL ?? DEFAULT_OPENAI_MODEL,
+        sandbox: params.sandbox,
+        isolatedContext: params.isolatedContext,
+      });
+    }
+    return primary;
+  }
+  return runCodexExec({
+    prompt: params.prompt,
+    workDir: params.workDir,
+    model: params.model,
+    sandbox: params.sandbox,
+    isolatedContext: params.isolatedContext,
   });
 }
 
@@ -1037,10 +1233,12 @@ export async function executeAutonomousTaskWithCodex(params: {
   description?: string | null;
   issueIdentifier: string;
   workDir: string;
+  provider?: 'anthropic' | 'openai';
   model?: string;
   preflight?: AutonomousPreflightResult;
 }): Promise<AutonomousExecutionResult> {
-  const model = params.model ?? 'gpt-5.3-codex';
+  const provider = params.provider ?? DEFAULT_PROVIDER;
+  const model = params.model ?? (provider === 'openai' ? DEFAULT_OPENAI_MODEL : DEFAULT_ANTHROPIC_MODEL);
   const maxAttempts = Number(process.env.SWARM_AUTONOMOUS_MAX_RETRIES ?? '3');
   const restarts: string[] = [];
   const preflight = params.preflight ?? runAutonomousPreflight(params.workDir);
@@ -1098,7 +1296,8 @@ export async function executeAutonomousTaskWithCodex(params: {
     worktree = createAutonomousWorktree(params.workDir, params.issueIdentifier);
     const activeWorktree = worktree;
     for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
-      const result = await runCodexExec({
+      const result = await runModelExec({
+        provider,
         prompt,
         workDir: activeWorktree.worktreeDir,
         model,
@@ -1206,16 +1405,34 @@ async function runAgentWithRecovery(
   config: TaskState['agentConfig'],
 ): Promise<string> {
   const maxAttempts = Number(process.env.SWARM_AGENT_MAX_RETRIES ?? '4');
+  const allowProviderFallback = (process.env.SWARM_AGENT_PROVIDER_FALLBACK ?? 'true').toLowerCase() !== 'false';
+  let provider = config.provider;
+  let model = config.model;
+  let switchedProvider = false;
   let effectivePrompt = prompt;
 
   for (let attempt = 1; attempt <= Math.max(1, maxAttempts); attempt++) {
     try {
-      if (config.provider === 'openai') {
-        return await runOpenAIAgent(taskId, role, effectivePrompt, workDir, config.model);
+      if (provider === 'openai') {
+        return await runOpenAIAgent(taskId, role, effectivePrompt, workDir, model);
       }
-      return await runAnthropicAgent(taskId, role, effectivePrompt, workDir, config.model);
+      return await runAnthropicAgent(taskId, role, effectivePrompt, workDir, model);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const isAuthError = /failed to authenticate|authentication_error|oauth token has expired|401\b/i.test(message);
+      const isModelAccessError = /selected model|may not exist|no access to it|invalid model|model .* not found/i.test(message);
+      if (allowProviderFallback && !switchedProvider && provider === 'anthropic' && (isAuthError || isModelAccessError)) {
+        switchedProvider = true;
+        provider = 'openai';
+        model = DEFAULT_OPENAI_MODEL;
+        emitEvent(taskId, {
+          type: 'agent_error',
+          taskId,
+          role,
+          error: 'Claude provider unavailable; switching this task to Codex fallback.',
+        });
+        continue;
+      }
       const kind = detectRetryKind(message);
       const canRetry = kind !== 'none' && attempt < maxAttempts;
 
@@ -1400,10 +1617,10 @@ export function createTask(
   config?: { provider?: 'anthropic' | 'openai'; model?: string },
 ): Task {
   const taskId = `task-${Date.now()}`;
-  const provider = config?.provider ?? 'openai';
+  const provider = config?.provider ?? DEFAULT_PROVIDER;
   const model =
     config?.model ??
-    (provider === 'openai' ? 'gpt-5.3-codex' : 'claude-sonnet-4');
+    (provider === 'openai' ? DEFAULT_OPENAI_MODEL : DEFAULT_ANTHROPIC_MODEL);
   const task: Task = {
     id: taskId,
     title,

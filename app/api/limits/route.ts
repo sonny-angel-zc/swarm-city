@@ -19,11 +19,23 @@ function hasCommand(command: string): boolean {
 export async function GET() {
   const codexAvailable = hasCommand(process.env.SWARM_CODEX_BIN ?? 'codex');
   const claudeAvailable = hasCommand(process.env.SWARM_CLAUDE_BIN ?? 'claude');
+  const defaultProvider: 'anthropic' | 'openai' =
+    (process.env.SWARM_DEFAULT_PROVIDER ?? 'anthropic').toLowerCase() === 'openai'
+      ? 'openai'
+      : 'anthropic';
+  const provider =
+    defaultProvider === 'anthropic'
+      ? (claudeAvailable ? 'anthropic' : codexAvailable ? 'openai' : 'anthropic')
+      : (codexAvailable ? 'openai' : claudeAvailable ? 'anthropic' : 'openai');
+  const model =
+    provider === 'anthropic'
+      ? process.env.SWARM_ANTHROPIC_MODEL ?? 'sonnet'
+      : process.env.SWARM_OPENAI_MODEL ?? 'gpt-5.3-codex';
 
   return NextResponse.json({
-    provider: codexAvailable ? 'openai' : claudeAvailable ? 'anthropic' : 'openai',
+    provider,
     plan: process.env.SWARM_PLAN ?? 'local-cli',
-    model: codexAvailable ? 'gpt-5.3-codex' : 'claude-sonnet-4',
+    model,
     codexAvailable,
     claudeAvailable,
     ...DEFAULT_LIMITS,

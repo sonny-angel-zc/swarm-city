@@ -6,6 +6,8 @@ import { BacklogItem, BacklogPriority } from '../core/types';
 import { UNASSIGNED_PROJECT_ID } from '../core/linearProject';
 import {
   STRATEGIC_COPY,
+  formatStrategicDistrictAriaLabel,
+  formatStrategicQueueFocus,
   mapBacklogGroupLabel,
   mapStrategicProgressSourceLabel,
   mapStrategicStatusColor,
@@ -375,6 +377,7 @@ export default function BacklogPanel() {
       ? Math.round(Math.max(0, Math.min(1, selectedDistrictTab.progress)) * 100)
       : null;
   const backlogListRegionId = 'strategic-backlog-list';
+  const queueFocusSummary = formatStrategicQueueFocus(selectedDistrictLabel, visibleBacklog.length, backlog.length);
 
   return (
     <div
@@ -512,12 +515,21 @@ export default function BacklogPanel() {
             padding: '6px 8px',
           }}
           data-backlog-filter-project-name={selectedDistrictLabel}
+          aria-live="polite"
+          role="status"
         >
-          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {STRATEGIC_COPY.filterSummary}: {selectedDistrictLabel}
-            {selectedDistrictStatusLabel ? ` • ${selectedDistrictStatusLabel}` : ''}
-            {selectedDistrictProgressPercent != null ? ` • ${selectedDistrictProgressPercent}%` : ''}
-          </span>
+          <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {queueFocusSummary}
+            </span>
+            {(selectedDistrictStatusLabel || selectedDistrictProgressPercent != null) && (
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: '#93c5fd' }}>
+                {selectedDistrictStatusLabel ? `Status: ${selectedDistrictStatusLabel}` : ''}
+                {selectedDistrictStatusLabel && selectedDistrictProgressPercent != null ? ' • ' : ''}
+                {selectedDistrictProgressPercent != null ? `Progress: ${selectedDistrictProgressPercent}%` : ''}
+              </span>
+            )}
+          </div>
           {selectedDistrict !== 'all' && (
             <button
               onClick={() => setSelectedDistrict('all')}
@@ -540,6 +552,7 @@ export default function BacklogPanel() {
         <div
           role="tablist"
           aria-label="Strategic districts"
+          aria-orientation="horizontal"
           style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}
         >
           {districtTabs.map((tab, index) => {
@@ -558,11 +571,13 @@ export default function BacklogPanel() {
                 aria-selected={isSelected}
                 aria-controls={backlogListRegionId}
                 tabIndex={isSelected ? 0 : -1}
-                aria-label={
-                  hasMetrics
-                    ? `${tab.name}. ${statusLabel}. ${tab.issues} issues. ${progressPercent}% complete.`
-                    : `${tab.name}. ${tab.issues} issues.`
-                }
+                aria-label={formatStrategicDistrictAriaLabel({
+                  name: tab.name,
+                  issues: tab.issues,
+                  hasMetrics,
+                  status: tab.status,
+                  progressPercent,
+                })}
                 data-testid={`district-tab-${tab.districtId}`}
                 data-district-selected={isSelected ? 'true' : 'false'}
                 data-district-progress-source={tab.progressSource ?? undefined}
@@ -576,10 +591,20 @@ export default function BacklogPanel() {
                   setSelectedDistrict((current) => (current === tab.projectId ? 'all' : tab.projectId));
                 }}
                 onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    if (tab.projectId === 'all') {
+                      setSelectedDistrict('all');
+                    } else {
+                      setSelectedDistrict((current) => (current === tab.projectId ? 'all' : tab.projectId));
+                    }
+                    return;
+                  }
                   if (event.key === 'Escape') {
                     if (selectedDistrict !== 'all') {
                       event.preventDefault();
                       setSelectedDistrict('all');
+                      districtTabRefs.current[0]?.focus();
                     }
                     return;
                   }
@@ -698,7 +723,7 @@ export default function BacklogPanel() {
             style={{ padding: '7px 12px', fontSize: 10, color: '#93c5fd', borderBottom: '1px solid rgba(255,255,255,0.05)' }}
             aria-live="polite"
           >
-            {STRATEGIC_COPY.filterSummary}: {selectedDistrictLabel} • Showing {visibleBacklog.length} of {backlog.length} issues
+            {queueFocusSummary}
           </div>
         )}
         {(['in_progress', 'todo', 'blocked', 'done'] as const).map(status => {

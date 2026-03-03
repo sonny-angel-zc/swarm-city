@@ -8,7 +8,7 @@ import {
   detectRetryKind,
   hasActiveCodexProcess,
   runAutonomousPreflight,
-  runCodexExec,
+  runModelExec,
 } from './orchestrator';
 import { AgentRole } from './types';
 import { addAgentTokens, clearAllStatuses, setAgentLastOutput, setAgentStatus } from './agentRegistry';
@@ -71,6 +71,18 @@ const PROJECT_ROOT = path.resolve(process.cwd());
 const RUNTIME_DIR = path.join(PROJECT_ROOT, process.env.SWARM_RUNTIME_DIR ?? '.swarm-runtime');
 const DEV_SERVER_RESTART_SIGNAL = path.join(RUNTIME_DIR, process.env.SWARM_DEV_RESTART_SIGNAL ?? 'restart-dev-server.signal');
 const DEV_SERVER_HEALTH_URL = process.env.SWARM_DEV_HEALTH_URL ?? 'http://127.0.0.1:3000/api/autonomous/health';
+type AutonomousProvider = 'anthropic' | 'openai';
+
+function resolveAutonomousProvider(): AutonomousProvider {
+  return (process.env.SWARM_AUTONOMOUS_PROVIDER ?? 'anthropic').toLowerCase() === 'openai'
+    ? 'openai'
+    : 'anthropic';
+}
+
+function resolveAutonomousModel(provider: AutonomousProvider): string {
+  if (provider === 'openai') return process.env.SWARM_AUTONOMOUS_MODEL ?? process.env.SWARM_OPENAI_MODEL ?? 'gpt-5.3-codex';
+  return process.env.SWARM_AUTONOMOUS_MODEL ?? process.env.SWARM_ANTHROPIC_MODEL ?? 'sonnet';
+}
 
 const SEED_TASKS: Array<{ title: string; description: string; priority: number }> = [
   {
@@ -328,6 +340,7 @@ function runValidationBuild(workDir: string): { ok: boolean; output: string } {
 }
 
 async function generateImprovements(summary: string): Promise<Array<{ title: string; description: string; priority: 'P2' | 'P3' }>> {
+  const provider = resolveAutonomousProvider();
   const prompt = [
     'You are a reflection agent for a self-improving software system.',
     'Given the completed work summary below, propose up to 3 concrete improvement tasks.',
@@ -341,10 +354,11 @@ async function generateImprovements(summary: string): Promise<Array<{ title: str
     summary.slice(-5000),
   ].join('\n');
 
-  const res = await runCodexExec({
+  const res = await runModelExec({
+    provider,
     prompt,
     workDir: PROJECT_ROOT,
-    model: process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex',
+    model: resolveAutonomousModel(provider),
     sandbox: 'read-only',
     isolatedContext: true,
   });
@@ -514,7 +528,8 @@ async function tickLoop() {
       return;
     }
 
-    const model = process.env.SWARM_AUTONOMOUS_MODEL ?? 'gpt-5.3-codex';
+    const provider = resolveAutonomousProvider();
+    const model = resolveAutonomousModel(provider);
     const usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, model };
 
     setAgentStatus('pm', 'working', `Decompose ${issue.identifier}`);
@@ -528,7 +543,8 @@ async function tickLoop() {
       `Description: ${issue.description ?? '(no description provided)'}`,
     ].join('\n');
 
-    const decomposition = await runCodexExec({
+    const decomposition = await runModelExec({
+      provider,
       prompt: decomposePrompt,
       workDir: PROJECT_ROOT,
       model,
@@ -586,7 +602,8 @@ async function tickLoop() {
         '- Return a concise summary of what changed and what was validated.',
       ].join('\n');
 
-      const result = await runCodexExec({
+      const result = await runModelExec({
+        provider,
         prompt: rolePrompt,
         workDir: PROJECT_ROOT,
         model,
@@ -640,7 +657,8 @@ async function tickLoop() {
       validation.output.slice(0, 2000),
     ].join('\n');
 
-    const summary = await runCodexExec({
+    const summary = await runModelExec({
+      provider,
       prompt: summaryPrompt,
       workDir: PROJECT_ROOT,
       model,

@@ -141,7 +141,7 @@ export class RateLimitManager {
 }
 
 export const DEFAULT_RATE_LIMITS: Partial<Record<RateLimitKey, RateLimitConfig>> = {
-  'anthropic:claude-sonnet-4': { maxRequests: 6, windowMs: 10_000, cooldownMs: 12_000 },
+  'anthropic:sonnet': { maxRequests: 6, windowMs: 10_000, cooldownMs: 12_000 },
   'openai:gpt-5.3-codex': { maxRequests: 5, windowMs: 10_000, cooldownMs: 12_000 },
   'openai:gpt-4.1': { maxRequests: 8, windowMs: 10_000, cooldownMs: 10_000 },
   'openai:gpt-4o-mini': { maxRequests: 14, windowMs: 10_000, cooldownMs: 8_000 },

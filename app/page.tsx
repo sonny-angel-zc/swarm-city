@@ -9,7 +9,7 @@ import ActivityFeed from '@/components/ActivityFeed';
 import TaskInput from '@/components/TaskInput';
 import Treasury from '@/components/Treasury';
 import BudgetPanel from '@/components/BudgetPanel';
-import OverlayToggle from '@/components/OverlayToggle';
+import BudgetAlertLayer from '@/components/BudgetAlertLayer';
 import BacklogPanel from '@/components/BacklogPanel';
 import ComponentErrorBoundary from '@/components/ComponentErrorBoundary';
 import { useSwarmStore } from '@/core/store';
@@ -110,8 +110,8 @@ export default function Home() {
             <ComponentErrorBoundary name="BudgetPanel">
               <BudgetPanel />
             </ComponentErrorBoundary>
-            <ComponentErrorBoundary name="OverlayToggle">
-              <OverlayToggle />
+            <ComponentErrorBoundary name="BudgetAlertLayer">
+              <BudgetAlertLayer />
             </ComponentErrorBoundary>
           </div>
         </div>

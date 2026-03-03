@@ -42,8 +42,8 @@ const STATUS_WEIGHT: Record<ProviderStatus, number> = {
 };
 
 export const DEFAULT_MODEL_CHAIN: ModelCandidate[] = [
-  { provider: 'openai', model: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', tier: 'primary' },
-  { provider: 'anthropic', model: 'claude-sonnet-4', label: 'Claude Sonnet 4', tier: 'fallback' },
+  { provider: 'anthropic', model: 'sonnet', label: 'Claude Sonnet', tier: 'primary' },
+  { provider: 'openai', model: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', tier: 'fallback' },
   { provider: 'openai', model: 'gpt-4.1', label: 'GPT-4.1', tier: 'fallback' },
   { provider: 'openai', model: 'gpt-4o-mini', label: 'GPT-4o mini', tier: 'fallback' },
 ];
@@ -52,14 +52,14 @@ export type ModelPreset = 'claude-first' | 'codex-first';
 
 export const MODEL_PRESET_CHAINS: Record<ModelPreset, ModelCandidate[]> = {
   'claude-first': [
-    { provider: 'anthropic', model: 'claude-sonnet-4', label: 'Claude Sonnet 4', tier: 'primary' },
+    { provider: 'anthropic', model: 'sonnet', label: 'Claude Sonnet', tier: 'primary' },
     { provider: 'openai', model: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', tier: 'fallback' },
     { provider: 'openai', model: 'gpt-4.1', label: 'GPT-4.1', tier: 'fallback' },
     { provider: 'openai', model: 'gpt-4o-mini', label: 'GPT-4o mini', tier: 'fallback' },
   ],
   'codex-first': [
     { provider: 'openai', model: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', tier: 'primary' },
-    { provider: 'anthropic', model: 'claude-sonnet-4', label: 'Claude Sonnet 4', tier: 'fallback' },
+    { provider: 'anthropic', model: 'sonnet', label: 'Claude Sonnet', tier: 'fallback' },
     { provider: 'openai', model: 'gpt-4.1', label: 'GPT-4.1', tier: 'fallback' },
     { provider: 'openai', model: 'gpt-4o-mini', label: 'GPT-4o mini', tier: 'fallback' },
   ],

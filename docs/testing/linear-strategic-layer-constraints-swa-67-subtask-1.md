@@ -1,97 +1,133 @@
 # SWA-67 Subtask 1/5: Research Constraints for Linear Strategic Layer
 
 ## Goal
-Audit current architecture and constraints for integrating Linear projects as the strategic layer (city districts, progress tracking, backlog organization), then define implementation-ready guidance for SWA-67 follow-up subtasks.
+Audit architecture and runtime constraints for integrating Linear projects as the strategic layer (city districts, progress tracking, backlog organization), and produce implementation-ready guidance for SWA-67 subtasks 2-5.
 
 ## Code-Verified Baseline
-1. Strategic district experience already exists in `src/components/BacklogPanel.tsx`.
-   - District tabs are built from `linear.projects`.
-   - Active backlog filter is keyed by stable `projectId` (`all`, concrete id, `__no_project__`).
-   - E2E-stable attributes are present (`data-testid="strategic-districts"`, `data-district-status`, `data-district-progress-source`, `data-backlog-filter-project-id`).
 
-2. Strategic project mapping has a canonical implementation in `src/core/linearProject.ts`.
-   - `mapLinearProjectContract` controls progress normalization, progress-source selection, district id derivation, and unassigned project synthesis.
-   - Unknown/missing issue states intentionally collapse to `todo` via `toIssueBreakdownBucket`.
+1. Strategic district UX is already wired in backlog UI.
+- File: `src/components/BacklogPanel.tsx`
+- `linear.projects` drives district tabs.
+- Backlog filtering is keyed by stable `projectId` (`all`, concrete project id, `__no_project__`).
+- Deterministic UI hooks already exist: `data-testid="strategic-districts"`, `data-testid="district-tab-{districtId}"`, `data-district-status`, `data-district-progress-source`, `data-backlog-filter-project-id`.
 
-3. Client sync prefers server-provided project contracts and falls back safely.
-   - `app/api/linear/route.ts` returns `contracts.projects`.
-   - `src/core/linearSync.ts` consumes `contracts.projects` first, else derives projects from raw issue/project nodes.
+2. Strategic project mapping has a canonical mapper.
+- File: `src/core/linearProject.ts`
+- `mapLinearProjectContract` owns:
+  - progress normalization
+  - progress source (`linear` vs `issues_fallback`)
+  - district id derivation
+  - synthetic unassigned project behavior (`__no_project__`, `unassigned`)
+- Unknown or missing issue state types intentionally fall back to `todo` via `toIssueBreakdownBucket`.
 
-4. Two separate server query stacks still exist for the same project domain.
-   - API route stack: `app/api/linear/route.ts`.
-   - Core server stack: `src/core/linearServer.ts`.
+3. Client sync already supports contract-first ingestion.
+- File: `src/core/linearSync.ts`
+- `syncFromLinear` prefers `result.contracts.projects` when available.
+- If API contract is missing, client derives from raw `team.projects` + `team.issues`.
+
+4. Strategic contract type is shared and explicit.
+- File: `src/core/types.ts`
+- `LinearProjectContract` includes `progress`, `status`, `progressSource`, `issueBreakdown`, `districtId`, and unassigned identity fields.
+
+5. Two server-side integration stacks still exist.
+- API route path: `app/api/linear/route.ts` (returns `contracts.projects`).
+- Core server path: `src/core/linearServer.ts` (separate parsing/query stack).
 
 ## Hard Constraints (Current)
-1. Query and store truncation are hard-coded.
-   - `app/api/linear/route.ts` currently queries `issues(first: 50)`, `projects(first: 20)`, and nested `issues(first: 50)`.
-   - `src/core/linearServer.ts` uses the same `50/20/50` caps.
-   - `src/core/store.ts` truncates merged backlog to the most recent 100 items in `syncBacklog`.
-   - Impact: district/project rollups and backlog view can silently omit work at larger scale.
 
-2. Team scope is fixed to one hardcoded team id.
-   - `TEAM_ID` in `src/core/linearSync.ts`.
-   - `LINEAR_TEAM_ID` in `src/core/linearServer.ts`.
-   - Impact: no workspace/team switch without code changes.
+1. Query caps and backlog caps can silently drop scope.
+- `app/api/linear/route.ts`: `issues(first: 50)`, `projects(first: 20)`, project `issues(first: 50)`.
+- `src/core/linearServer.ts`: same `50/20/50` bounds.
+- `src/core/store.ts` in `syncBacklog`: merged backlog is sorted then truncated to `100` entries.
+- Constraint impact: larger teams can lose project/issues visibility with no explicit truncation signal.
 
-3. Linear state caching has no invalidation lifecycle.
-   - `cachedStates` in `src/core/linearSync.ts` is process-lifetime.
-   - Impact: status transitions can map against stale state ids after workflow changes.
+2. Team scope is hardcoded.
+- `TEAM_ID` in `src/core/linearSync.ts` and `LINEAR_TEAM_ID` in `src/core/linearServer.ts` are fixed constants.
+- Constraint impact: no workspace/team switch without code changes.
 
-4. Progress semantics drift across endpoints.
-   - Strategic contract (`LinearProjectContract`) carries `progress` and `progressSource`.
-   - `app/api/projects/route.ts` exposes only issue-derived `progressPercentage`, dropping `progressSource`.
-   - Impact: different surfaces can show conflicting progress for the same project.
+3. Linear state cache has no invalidation.
+- `cachedStates` in `src/core/linearSync.ts` persists for process lifetime.
+- Constraint impact: status transitions can drift from live Linear state configuration.
 
-5. Contract ingestion is strict and silently drops malformed entries.
-   - `parseProjectsFromApiContract` in `src/core/linearSync.ts` returns `[]` for entries with missing required fields.
-   - Impact: upstream contract drift can hide districts without explicit operator signal.
+4. Progress semantics diverge across endpoints.
+- Strategic contract supports source-aware progress (`progressSource`).
+- `app/api/projects/route.ts` exposes issue-derived `progressPercentage` only.
+- Constraint impact: different UI surfaces can display conflicting progress narratives.
 
-6. District display ids are slugified from project name and are not uniqueness-safe.
-   - `districtId` is derived from project name; backlog filtering still uses stable `project.id`.
-   - Impact: selector/analytics collisions are possible when names normalize to the same slug.
+5. Contract parsing is strict and drop-based.
+- `parseProjectsFromApiContract` in `src/core/linearSync.ts` drops malformed entries (`return []`) without telemetry.
+- Constraint impact: upstream drift can hide districts with no operator-visible warning.
 
-7. Server/query contract drift already shows up in repository artifacts.
-   - Existing tests/docs still assert older `100/100/250` query limits while runtime code is `50/20/50`.
-   - Impact: SWA-67 work must include contract parity cleanup first to avoid false confidence.
+6. District display identity is slug-from-name and not uniqueness-safe.
+- `districtId` is slugified from `project.name` in `src/core/linearProject.ts`.
+- Backlog filtering remains correct because it uses `project.id`.
+- Constraint impact: duplicate normalized names can collide for selectors/analytics keyed by `districtId`.
+
+7. Verified contract drift already exists in repo artifacts.
+- Runtime query limits are `50/20/50`.
+- `tests/linear-server-projects.spec.ts` still asserts `projects(first: 100)` and `issues(first: 250)`.
+- Constraint impact: current test intent and production behavior are out of sync.
+
+## Architecture Invariants To Preserve
+
+1. Strategic filtering identity must remain `project.id`-based.
+- Never switch backlog filtering to `districtId`.
+
+2. Unassigned work must stay first-class.
+- Preserve synthetic project identity: `id=__no_project__`, `districtId=unassigned`.
+
+3. Canonical issue buckets remain `todo | in_progress | done` for project rollups.
+- Keep mapping centralized in `src/core/linearProject.ts`.
+
+4. Strategic progress must be source-attributed.
+- UI should continue to expose whether progress is `linear` or `issues_fallback`.
+
+## Implementation Guidance (Actionable, Ordered)
+
+1. Subtask 2/5: Lock a single strategic project contract boundary.
+- Keep `LinearProjectContract` as canonical strategic contract.
+- Decide `/api/projects` role:
+  - Strategic endpoint: add `progressSource`, `status`, and preserve source provenance.
+  - Non-strategic endpoint: explicitly de-scope from strategic surfaces and docs.
+
+2. Subtask 3/5: Remove server-stack drift before adding features.
+- Extract shared query fragments and project-rollup mapping into one core module (for both `app/api/linear/route.ts` and `src/core/linearServer.ts`).
+- Keep one query limit/config source of truth.
+- Add parity tests so both stacks produce equivalent project contracts for same fixture payload.
+
+3. Subtask 3/5: Introduce bounded pagination + truncation signaling.
+- Add cursor pagination for issues/projects/project-issues with `pageInfo { hasNextPage endCursor }`.
+- Add hard guards (max pages, max nodes, timeout budget).
+- Return explicit truncation metadata (e.g., `contracts.meta.truncated=true`) and surface a telemetry/log warning.
+
+4. Subtask 4/5: Extract strategic selectors from UI component.
+- Move sorting/filtering/building district tab view-model out of `BacklogPanel` into pure selectors (example: `src/core/linearSelectors.ts`).
+- Keep selection/filter contracts testable without DOM rendering.
+
+5. Subtask 5/5: Close verification gaps.
+- Add tests for pagination and truncation metadata behavior.
+- Add duplicate-slug project-name fixture and enforce deterministic selector id strategy.
+- Add explicit stale-state-cache behavior tests for status updates.
+- Update stale query-limit assertions in `tests/linear-server-projects.spec.ts` to current contract (or to shared constants if extracted).
 
 ## Validation Coverage Snapshot
-Covered:
-- Mapper rules: `tests/linear-project-contract.spec.ts`.
-- Client contract preference/fallback: `tests/linear-sync-contract.spec.ts`.
-- Strategic UI contract and filter behavior: `tests/linear-integration.spec.ts`.
-- Server project normalization: `tests/linear-server-projects.spec.ts`.
 
-Missing:
-- Pagination behavior and truncation telemetry coverage.
-- Cross-stack parity assertions (`/api/linear` mapper output vs `linearServer` output).
-- Duplicate district slug collision coverage.
-- Explicit stale-state-cache behavior coverage.
+Currently covered:
+- Mapper semantics: `tests/linear-project-contract.spec.ts`
+- Client contract preference/fallback: `tests/linear-sync-contract.spec.ts`
+- Strategic UI filtering/status/progress attributes: `tests/linear-integration.spec.ts`
+- Server project normalization: `tests/linear-server-projects.spec.ts`
 
-## Actionable Implementation Guidance (Ordered)
-1. Subtask 2/5: Lock one strategic data contract.
-   - Treat `LinearProjectContract` as the only strategic-layer contract.
-   - Decide and document whether `/api/projects` is strategic (then add `progressSource`) or non-strategic (then de-scope from strategic UI).
-
-2. Subtask 3/5: Remove query/aggregation drift between stacks before adding features.
-   - Extract shared Linear query fragments and project rollup mapper into `src/core`.
-   - Make `app/api/linear/route.ts` and `src/core/linearServer.ts` consume the same primitives.
-   - Add parity tests that snapshot both outputs against one fixture.
-
-3. Subtask 3/5: Add bounded pagination and explicit truncation signaling.
-   - Implement cursor pagination with `pageInfo { hasNextPage endCursor }` for team issues, projects, and project issues.
-   - Add hard guards (max pages + time budget) and return a truncation flag/telemetry when limits are reached.
-
-4. Subtask 4/5: Extract strategic selectors from UI component code.
-   - Move sorting/filtering/grouping from `BacklogPanel` into pure selectors (e.g., `src/core/linearSelectors.ts`).
-   - Keep filtering keyed by `project.id`; use `districtId` only for display/test hooks.
-
-5. Subtask 5/5: Expand deterministic verification.
-   - Add tests for multi-page issue/project responses.
-   - Add duplicate-slug district cases and enforce deterministic tab id strategy.
-   - Add stale-state-cache test coverage for `fetchStates`/status updates.
+Missing or weak:
+- Pagination + truncation behavior
+- Cross-stack parity for API route vs core server stack
+- Duplicate `districtId` collision behavior
+- State-cache invalidation lifecycle
 
 ## Definition of Done Signals for SWA-67
-- Strategic layer reads one canonical project contract everywhere.
-- Query limits no longer silently hide districts/issues (or truncation is explicit and test-covered).
-- District filtering remains identity-safe (`projectId`) and E2E deterministic.
-- Progress display semantics are consistent across strategic surfaces and expose source provenance.
+
+1. Strategic layer reads one canonical project contract everywhere.
+2. Query limits no longer silently hide work (or truncation is explicit and tested).
+3. District filtering remains identity-safe (`project.id`) and deterministic.
+4. Progress semantics stay consistent and source-attributed across strategic surfaces.
+5. Tests/docs query-limit expectations match runtime implementation.

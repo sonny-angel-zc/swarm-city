@@ -14,14 +14,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'title is required' }, { status: 400 });
     }
 
-    const resolvedProvider = provider ?? 'openai';
+    const defaultProvider: 'anthropic' | 'openai' =
+      (process.env.SWARM_DEFAULT_PROVIDER ?? 'anthropic').toLowerCase() === 'openai'
+        ? 'openai'
+        : 'anthropic';
+    const resolvedProvider = provider ?? defaultProvider;
     if (resolvedProvider !== 'anthropic' && resolvedProvider !== 'openai') {
       return NextResponse.json({ error: 'unsupported provider' }, { status: 400 });
     }
 
     const resolvedModel =
       model?.trim() ||
-      (resolvedProvider === 'openai' ? 'gpt-5.3-codex' : 'claude-sonnet-4');
+      (resolvedProvider === 'openai'
+        ? process.env.SWARM_OPENAI_MODEL ?? 'gpt-5.3-codex'
+        : process.env.SWARM_ANTHROPIC_MODEL ?? 'sonnet');
 
     const task = createTask(title.trim(), {
       provider: resolvedProvider,

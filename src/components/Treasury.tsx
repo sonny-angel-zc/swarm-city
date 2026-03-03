@@ -62,6 +62,13 @@ export default function Treasury() {
   const maxTriggeredThreshold = economy.triggeredBudgetAlerts.length > 0
     ? Math.max(...economy.triggeredBudgetAlerts)
     : null;
+  const projectedMonthlyCost = telemetry.burnRatePerMinUsd * 60 * 24 * 30;
+  const budgetStatus = spentPct >= 1 ? 'Exhausted' : spentPct >= 0.9 ? 'Critical' : spentPct >= 0.75 ? 'Warning' : 'Healthy';
+  const budgetStatusClass =
+    spentPct >= 1 ? 'border-red-600/50 bg-red-600/20 text-red-100' :
+    spentPct >= 0.9 ? 'border-red-500/40 bg-red-500/15 text-red-100' :
+    spentPct >= 0.75 ? 'border-amber-500/35 bg-amber-500/15 text-amber-100' :
+    'border-emerald-500/35 bg-emerald-500/12 text-emerald-100';
 
   useEffect(() => {
     let alive = true;
@@ -165,6 +172,18 @@ export default function Treasury() {
       <div className={`mt-2 flex items-center justify-between ${cardText}`}>
         <span>internal burn ${telemetry.burnRatePerMinUsd.toFixed(4)}/min</span>
         <span>total ${telemetry.totalCostUsd.toFixed(4)}</span>
+      </div>
+      <div className={`mt-0.5 flex items-center justify-between ${cardText}`}>
+        <span>projected monthly</span>
+        <span className={projectedMonthlyCost >= economy.totalBudget ? 'text-red-200' : 'text-emerald-200'}>
+          ${projectedMonthlyCost.toFixed(2)}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center justify-between text-[10px] text-white/65">
+        <span>budget status</span>
+        <span className={`rounded-full border px-1.5 py-0.5 font-semibold ${budgetStatusClass}`}>
+          {budgetStatus}
+        </span>
       </div>
       <div className={`mt-0.5 flex items-center justify-between ${cardText}`}>
         <span>internal burst ${recentCost15s.toFixed(4)}/15s</span>

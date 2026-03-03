@@ -3,6 +3,46 @@
 import { useSwarmStore } from '@/core/store';
 import { BUILDING_CONFIGS, AgentRole } from '@/core/types';
 
+type BudgetStatusTone = 'healthy' | 'warning' | 'critical' | 'exhausted';
+
+function resolveBudgetStatusTone(spentPct: number): BudgetStatusTone {
+  if (spentPct >= 1) return 'exhausted';
+  if (spentPct >= 0.9) return 'critical';
+  if (spentPct >= 0.75) return 'warning';
+  return 'healthy';
+}
+
+const statusConfig: Record<BudgetStatusTone, { label: string; shortLabel: string; badgeClass: string; panelClass: string; helper: string }> = {
+  healthy: {
+    label: 'Healthy',
+    shortLabel: 'On track',
+    badgeClass: 'border-emerald-500/35 bg-emerald-500/12 text-emerald-100',
+    panelClass: 'border-emerald-500/25 bg-emerald-500/10',
+    helper: 'Spend is within a safe range.',
+  },
+  warning: {
+    label: 'Warning',
+    shortLabel: 'Watch burn',
+    badgeClass: 'border-amber-500/35 bg-amber-500/15 text-amber-100',
+    panelClass: 'border-amber-500/30 bg-amber-500/10',
+    helper: 'Burn is elevated. Rebalance model usage soon.',
+  },
+  critical: {
+    label: 'Critical',
+    shortLabel: 'Immediate action',
+    badgeClass: 'border-red-500/40 bg-red-500/18 text-red-100',
+    panelClass: 'border-red-500/35 bg-red-500/12',
+    helper: 'Budget depletion risk is high.',
+  },
+  exhausted: {
+    label: 'Exhausted',
+    shortLabel: 'Budget reached',
+    badgeClass: 'border-red-600/50 bg-red-600/22 text-red-50',
+    panelClass: 'border-red-600/45 bg-red-600/16',
+    helper: 'Budget is fully consumed.',
+  },
+};
+
 export default function BudgetPanel() {
   const economy = useSwarmStore(s => s.economy);
   const telemetry = useSwarmStore(s => s.telemetry);
@@ -15,8 +55,15 @@ export default function BudgetPanel() {
   const remaining = economy.totalBudget - economy.spent;
   const netFlow = economy.income - economy.expenses;
   const usedPct = economy.totalBudget > 0 ? economy.spent / economy.totalBudget : 0;
+  const tone = resolveBudgetStatusTone(usedPct);
+  const toneConfig = statusConfig[tone];
   const nextThreshold = economy.budgetAlertThresholds.find(t => !economy.triggeredBudgetAlerts.includes(t)) ?? null;
   const latestTelemetry = telemetry.events.length > 0 ? telemetry.events[telemetry.events.length - 1] : null;
+  const projectedMonthlyCost = telemetry.burnRatePerMinUsd * 60 * 24 * 30;
+  const budgetPaceLabel = projectedMonthlyCost >= economy.totalBudget
+    ? 'Projected to exceed token budget'
+    : 'Projected to stay within token budget';
+  const projectedBudgetPct = economy.totalBudget > 0 ? Math.min(1, projectedMonthlyCost / economy.totalBudget) : 0;
 
   // Build spend history bars from history points
   const historyBars = economy.history.slice(-20);
@@ -31,10 +78,13 @@ export default function BudgetPanel() {
       />
       {/* Panel */}
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div className="bg-[#0d1117] border border-[#1e2a3a] rounded-xl w-full max-w-lg max-h-[80vh] overflow-hidden shadow-2xl">
+        <div className="bg-[#0d1117] border border-[#1e2a3a] rounded-xl w-full max-w-3xl max-h-[85vh] overflow-hidden shadow-2xl">
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-[#1e2a3a]">
-            <h2 className="text-sm font-semibold text-white/90">Budget Allocation</h2>
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold text-white/90">Budget Allocation</h2>
+              <p className="mt-0.5 text-[11px] text-white/50">Live token and cost visibility for this swarm run.</p>
+            </div>
             <button
               onClick={() => setBudgetPanelOpen(false)}
               className="p-1 text-white/40 hover:text-white/80 transition-colors"
@@ -45,35 +95,94 @@ export default function BudgetPanel() {
             </button>
           </div>
 
-          {/* Summary stats */}
-          <div className="grid grid-cols-4 gap-px bg-[#1e2a3a] border-b border-[#1e2a3a]">
-            <div className="bg-[#0d1117] p-3 text-center">
-              <div className="text-[10px] text-white/40 uppercase tracking-wider">Income</div>
-              <div className="text-sm font-mono text-green-400 mt-0.5">+{economy.income.toLocaleString()}</div>
-            </div>
-            <div className="bg-[#0d1117] p-3 text-center">
-              <div className="text-[10px] text-white/40 uppercase tracking-wider">Expenses</div>
-              <div className="text-sm font-mono text-red-400 mt-0.5">-{economy.expenses.toLocaleString()}</div>
-            </div>
-            <div className="bg-[#0d1117] p-3 text-center">
-              <div className="text-[10px] text-white/40 uppercase tracking-wider">Remaining</div>
-              <div className={`text-sm font-mono mt-0.5 ${remaining > economy.totalBudget * 0.2 ? 'text-white/80' : 'text-red-400'}`}>
-                {remaining.toLocaleString()}
+          <div className={`mx-4 mt-4 rounded-lg border p-3 ${toneConfig.panelClass}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="text-xs text-white/75">
+                Budget status
+                <span className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${toneConfig.badgeClass}`}>
+                  {toneConfig.label}
+                </span>
               </div>
-            </div>
-            <div className="bg-[#0d1117] p-3 text-center">
-              <div className="text-[10px] text-white/40 uppercase tracking-wider">Cost</div>
-              <div className="text-sm font-mono text-amber-300 mt-0.5">${telemetry.totalCostUsd.toFixed(4)}</div>
+              <div className="text-[11px] text-white/70">{toneConfig.helper}</div>
             </div>
           </div>
 
-          <div className="px-4 py-2 border-b border-[#1e2a3a] text-[10px] text-white/55 flex items-center justify-between">
+          {/* Summary stats */}
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-px bg-[#1e2a3a] border-y border-[#1e2a3a]">
+            <div className="bg-[#0d1117] p-3 text-center">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Current Spend</div>
+              <div className="text-sm font-mono text-amber-300 mt-0.5">${telemetry.totalCostUsd.toFixed(4)}</div>
+            </div>
+            <div className="bg-[#0d1117] p-3 text-center">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Burn Rate</div>
+              <div className="text-sm font-mono text-amber-100 mt-0.5">${telemetry.burnRatePerMinUsd.toFixed(4)}/min</div>
+            </div>
+            <div className="bg-[#0d1117] p-3 text-center">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Projected Monthly</div>
+              <div className={`text-sm font-mono mt-0.5 ${projectedMonthlyCost >= economy.totalBudget ? 'text-red-300' : 'text-emerald-300'}`}>
+                ${projectedMonthlyCost.toFixed(2)}
+              </div>
+            </div>
+            <div className="bg-[#0d1117] p-3 text-center">
+              <div className="text-[10px] text-white/40 uppercase tracking-wider">Budget Remaining</div>
+              <div className={`text-sm font-mono mt-0.5 ${remaining > economy.totalBudget * 0.2 ? 'text-white/80' : 'text-red-400'}`}>
+                {Math.max(0, remaining).toLocaleString()}
+              </div>
+            </div>
+          </div>
+
+          <div className="px-4 py-2 border-b border-[#1e2a3a] text-[10px] text-white/55 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
             <span>budget used {Math.min(100, usedPct * 100).toFixed(1)}%</span>
+            <span className={projectedMonthlyCost >= economy.totalBudget ? 'text-red-300' : 'text-emerald-300'}>
+              {budgetPaceLabel}
+            </span>
             <span>
               {nextThreshold
                 ? `next alert ${Math.round(nextThreshold * 100)}%`
                 : 'all budget alerts triggered'}
             </span>
+          </div>
+
+          <div className="px-4 py-3 border-b border-[#1e2a3a]">
+            <h3 className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Live Cost Tracking</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-[10px]">
+              <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-2">
+                <div className="text-white/45">Current spend this run</div>
+                <div className="font-mono text-amber-100 mt-0.5">${telemetry.totalCostUsd.toFixed(4)}</div>
+                <div className="text-white/45 mt-1">{telemetry.events.length} metered events</div>
+              </div>
+              <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-2">
+                <div className="text-white/45">Live burn rate</div>
+                <div className="font-mono text-white/80 mt-0.5">${telemetry.burnRatePerMinUsd.toFixed(4)}/min</div>
+                <div className="text-white/45 mt-1">Equivalent ${(telemetry.burnRatePerMinUsd * 60).toFixed(4)}/hr</div>
+              </div>
+              <div className={`rounded border px-2 py-2 ${projectedMonthlyCost >= economy.totalBudget ? 'bg-red-500/8 border-red-500/25' : 'bg-emerald-500/8 border-emerald-500/25'}`}>
+                <div className="text-white/45">Projected monthly total</div>
+                <div className={`font-mono mt-0.5 ${projectedMonthlyCost >= economy.totalBudget ? 'text-red-200' : 'text-emerald-200'}`}>
+                  ${projectedMonthlyCost.toFixed(2)}
+                </div>
+                <div className="mt-1 w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: `${Math.max(4, projectedBudgetPct * 100)}%`,
+                      backgroundColor: projectedMonthlyCost >= economy.totalBudget ? '#F87171' : '#34D399',
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {(['healthy', 'warning', 'critical', 'exhausted'] as BudgetStatusTone[]).map(status => (
+                <span
+                  key={status}
+                  className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] ${statusConfig[status].badgeClass} ${tone === status ? '' : 'opacity-55'}`}
+                  aria-current={tone === status}
+                >
+                  {statusConfig[status].shortLabel}
+                </span>
+              ))}
+            </div>
           </div>
 
           {/* Agent budgets */}
@@ -152,7 +261,15 @@ export default function BudgetPanel() {
 
           <div className="p-4 border-t border-[#1e2a3a]">
             <h3 className="text-[10px] text-white/40 uppercase tracking-wider mb-2">Live Cost</h3>
-            <div className="grid grid-cols-2 gap-2 text-[10px]">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[10px]">
+              <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-1.5">
+                <div className="text-white/45">Income</div>
+                <div className="font-mono text-green-400 mt-0.5">+{economy.income.toLocaleString()}</div>
+              </div>
+              <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-1.5">
+                <div className="text-white/45">Expenses</div>
+                <div className="font-mono text-red-400 mt-0.5">-{economy.expenses.toLocaleString()}</div>
+              </div>
               <div className="rounded bg-[#161b22] border border-[#21262d] px-2 py-1.5">
                 <div className="text-white/45">Burn Rate</div>
                 <div className="font-mono text-amber-200 mt-0.5">${telemetry.burnRatePerMinUsd.toFixed(4)}/min</div>
