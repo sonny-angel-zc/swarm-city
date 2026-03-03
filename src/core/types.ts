@@ -254,6 +254,110 @@ export type LinearSyncState = {
   projects: LinearProjectContract[];
 };
 
+// ─── Issue Inspection Contract ───────────────────────────────────────────────
+
+/**
+ * IssueInspectionContract — the canonical typed shape for all data displayed
+ * when a task building is clicked in the city canvas (SWA-77).
+ *
+ * Source-of-truth rules:
+ * - All fields are derived from existing store state at selection time.
+ * - No new Linear API calls are triggered on selection.
+ * - Missing data (null project, empty log) is handled with zero-state fallbacks.
+ *
+ * API mapping: every field traces to one of:
+ *   (A) BacklogItem     — populated by linearSync.syncFromLinear() from Linear GraphQL
+ *   (B) LinearProjectContract — populated by listLinearProjects() / mapLinearProjectContract()
+ *   (C) Agent.log       — populated by store SSE event processing
+ *   (D) AutonomousStatus — populated by /api/autonomous status polling
+ *   (E) LinearSyncState  — populated by store.syncLinear()
+ */
+export type IssueInspectionContract = {
+  // ── Linear issue identity (source: A) ────────────────────────────────────
+  /** BacklogItem.id — Linear identifier string, e.g. "SWA-42". Primary key. */
+  issueId: string;
+  /** BacklogItem.linearId — Linear UUID (null for local/stub items). */
+  linearId: string | null;
+  /** BacklogItem.linearUrl — deep link into the Linear app (null for local/stub). */
+  linearUrl: string | null;
+  /** BacklogItem.title — issue title as synced from Linear. */
+  title: string;
+  /**
+   * Display identifier shown in the panel header.
+   * Resolution order: BacklogItem.id (Linear identifier like "SWA-42")
+   * → BacklogItem.linearId?.slice(0, 8) → issueId.slice(0, 8).
+   */
+  identifier: string;
+
+  // ── Issue status & priority (source: A) ──────────────────────────────────
+  /** Normalized app status bucket. Maps from Linear state type via normalizeIssueState(). */
+  status: BacklogStatus;
+  /** Raw Linear state name (e.g. "In Review", "In Progress"). Null for local items. */
+  statusLabel: string | null;
+  /**
+   * Normalized priority. Linear → app mapping:
+   *   1 (urgent) → P0 | 2 (high) → P1 | 3 (medium) → P2 | 0/4 (none/low) → P3
+   */
+  priority: BacklogPriority;
+  /** Data provenance: 'linear' for synced items, 'local'/'linear_stub' for offline. */
+  source: BacklogSource;
+  /** Label names from Linear issue labels.nodes[].name. Empty array when none. */
+  labels: string[];
+
+  // ── Ownership (source: A) ─────────────────────────────────────────────────
+  /** Agent role assigned to this issue (round-robin from pickOwner() during sync). */
+  ownerRole: AgentRole;
+  /** Linear assignee display name. Null when unassigned or not synced. */
+  ownerName: string | null;
+
+  // ── Project context (source: B, resolved via TaskBuilding.districtId) ────
+  /** LinearProjectContract.id. Null when issue is unassigned (districtId = 'unassigned'). */
+  projectId: string | null;
+  /** LinearProjectContract.name. 'No Project' for unassigned district. */
+  projectName: string;
+  /** Derived project status from issue breakdown counts (todo/in_progress/done). */
+  projectStatus: StrategicProjectStatus;
+  /**
+   * Project completion ratio (0-1).
+   * Source selected by progressSource field:
+   *   'linear'           → Linear project.progress (normalized 0-1)
+   *   'issues_fallback'  → doneIssues / totalIssues (0 when totalIssues = 0)
+   */
+  projectProgress: number;
+  /** Indicates which progress calculation was used. */
+  projectProgressSource: ProjectProgressSource;
+  /** Per-bucket issue counts for the parent project. */
+  projectIssueBreakdown: LinearProjectIssueBreakdown;
+  /** LinearProjectContract.description. Null when absent or unassigned. */
+  projectDescription: string | null;
+
+  // ── Autonomous pipeline context (source: D) ────────────────────────────
+  /** True when the autonomous loop is currently processing this issue. */
+  isSwarmTarget: boolean;
+  /** Orchestrator task ID when isSwarmTarget = true. Null otherwise. */
+  swarmTaskId: string | null;
+  /**
+   * Timestamp (ms) when the autonomous loop last completed this issue.
+   * Sourced from AutonomousStatus.completedTasks[].completedAt.
+   * Null if the issue has not yet been completed by the loop.
+   */
+  autonomousCompletedAt: number | null;
+
+  // ── Agent activity history (source: C) ────────────────────────────────
+  /**
+   * Last 8 log entries from agents[ownerRole].log, newest-first.
+   * Empty array when isSwarmTarget = false or no log entries exist.
+   * Each entry: { timestamp: number; message: string; type: 'info'|'output'|'error'|'request' }
+   */
+  agentLog: LogEntry[];
+
+  // ── Sync metadata (source: E) ─────────────────────────────────────────
+  /** Epoch ms of the last successful Linear sync. Null before first sync. */
+  syncedAt: number | null;
+  /** BacklogItem.updatedAt — epoch ms of last known update (from Linear updatedAt field). */
+  updatedAt: number;
+};
+
 export type AutonomousEventType = 'info' | 'warning' | 'error';
 
 export type AutonomousEvent = {

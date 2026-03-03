@@ -1337,14 +1337,24 @@ export default function CityCanvas() {
   // Pan & zoom
   const dragStartRef = useRef({ x: 0, y: 0 });
   const touchRef = useRef({ lastDist: 0, lastX: 0, lastY: 0 });
+  const isDraggingRef = useRef(false);
   const handleMouseDown = (e: React.MouseEvent) => {
+    isDraggingRef.current = true;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
     mouseRef.current = { dragging: false, lastX: e.clientX, lastY: e.clientY };
   };
   const handleMouseMove = (e: React.MouseEvent) => {
-    if (!(e.buttons & 1)) return;
+    if (!isDraggingRef.current) return;
+    if (!(e.buttons & 1)) { isDraggingRef.current = false; return; }
     const dx = e.clientX - mouseRef.current.lastX;
     const dy = e.clientY - mouseRef.current.lastY;
+    // Clamp to avoid jumps from stale position (fast mouse movement before click)
+    const maxDelta = 40;
+    if (Math.abs(dx) > maxDelta || Math.abs(dy) > maxDelta) {
+      mouseRef.current.lastX = e.clientX;
+      mouseRef.current.lastY = e.clientY;
+      return;
+    }
     const totalDx = e.clientX - dragStartRef.current.x;
     const totalDy = e.clientY - dragStartRef.current.y;
     if (Math.abs(totalDx) + Math.abs(totalDy) > 5) mouseRef.current.dragging = true;
@@ -1353,6 +1363,7 @@ export default function CityCanvas() {
     mouseRef.current.lastY = e.clientY;
   };
   const handleMouseUp = () => {
+    isDraggingRef.current = false;
     setTimeout(() => { mouseRef.current.dragging = false; }, 10);
   };
   const handleWheel = (e: React.WheelEvent) => {
