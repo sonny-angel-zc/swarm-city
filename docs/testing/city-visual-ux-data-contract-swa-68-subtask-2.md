@@ -18,7 +18,10 @@ Define the interaction model, copy contract, and deterministic UI/data mapping f
 - Selection semantics:
   - Exactly one mode is selected at a time.
   - Selected tab is in tab order (`tabIndex=0`); unselected tabs are roving (`tabIndex=-1`).
-  - Canvas exposes current mode state for renderer-aware assertions.
+  - Toggle and canvas expose shared mode/emphasis state for renderer-aware assertions.
+- Visual impact strip:
+  - Active mode exposes deterministic emphasis labels for `roads`, `transit`, `trees + parks`, `city life`, and `spend layer`.
+  - Emphasis labels are contract-bound: `off`, `supporting`, `primary`, `dominant`.
 
 ## Copy Contract
 
@@ -27,7 +30,10 @@ Control copy should be operational and explain the decision impact in one glance
 | Surface | Contract copy |
 | --- | --- |
 | Toggle header | `View mode` |
+| Toggle subheading | `Tune what stands out as roads, transit, parks, and city life evolve.` |
 | Toggle ARIA label | `City view mode` |
+| Impact heading | `Visual impact` |
+| Keyboard hint | `Use Arrow keys, Home, or End to switch modes. Enter or Space activates the focused tab.` |
 | Activity tab label | `City Life` |
 | Activity tab helper | `Live streets, transit flow, and active neighborhoods` |
 | Power tab label | `Transit Grid` |
@@ -41,10 +47,12 @@ State must be available through semantic ARIA and explicit `data-*` attributes.
 
 | UI element | Required contract fields |
 | --- | --- |
-| Toggle root | `role="tablist"`, `data-testid="city-overlay-toggle"`, `data-overlay-current="{mode}"` |
+| Toggle root | `role="tablist"`, `data-testid="city-overlay-toggle"`, `data-overlay-current="{mode}"`, `data-overlay-contract-version="swa-68-subtask-2"` |
 | Toggle tab | `role="tab"`, `aria-selected`, `aria-controls="city-canvas"`, `data-testid="city-overlay-mode-{mode}"` |
-| Toggle tab state | `data-overlay-mode="{mode}"`, `data-overlay-selected="true/false"` |
-| Canvas root | `id="city-canvas"`, `data-testid="city-canvas"`, `data-overlay-mode="{mode}"` |
+| Toggle tab state | `data-overlay-mode="{mode}"`, `data-overlay-selected="true/false"`, `data-overlay-renderer-intent="{intent}"` |
+| Toggle tab emphasis | `data-overlay-roads-emphasis`, `data-overlay-transit-emphasis`, `data-overlay-greenspace-emphasis`, `data-overlay-city-life-emphasis`, `data-overlay-spend-emphasis` |
+| Impact strip | `data-testid="city-overlay-impact-strip"`, `data-overlay-impact-mode`, per-row `data-overlay-impact-key`, `data-overlay-impact-level`, `data-overlay-impact-label` |
+| Canvas root | `id="city-canvas"`, `data-testid="city-canvas"`, `data-overlay-contract-version="swa-68-subtask-2"`, `data-overlay-mode="{mode}"`, matching focus/emphasis `data-*` mirrors |
 
 Deterministic mode mapping:
 
@@ -59,7 +67,7 @@ Deterministic mode mapping:
 - Pass:
   - Tablist semantics and roving tab focus are consistent for pointer and keyboard interactions.
   - Copy labels/helpers match the contract exactly and remain mode-specific.
-  - `data-overlay-current`, tab `data-overlay-selected`, and canvas `data-overlay-mode` stay in sync after every mode change.
+  - `data-overlay-current`, tab `data-overlay-selected`, impact strip labels, and canvas focus/emphasis `data-*` stay in sync after every mode change.
   - `power` and `economy` modes visibly alter rendering emphasis as defined in renderer subtasks.
 - Fail:
   - Any mode switch where ARIA state and `data-*` state diverge.

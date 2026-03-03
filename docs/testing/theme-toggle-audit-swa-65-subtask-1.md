@@ -1,91 +1,120 @@
-# SWA-65 Subtask 1/6: Audit Existing Toggle Behavior and Test Infrastructure
+# SWA-65 Subtask 1/7: Audit Existing Theme Toggle and Test Infrastructure
 
 ## Scope
 
 Issue: `SWA-65 Add End-to-End Accessibility Assertions for Theme Toggle`
 
-This audit verifies:
-- current theme-toggle behavior and state coupling,
-- current e2e accessibility test infrastructure,
-- concrete assertion coverage gaps to address in later subtasks.
+This audit identifies:
+- existing theme-toggle selectors and state contracts,
+- existing accessibility semantics and keyboard behavior,
+- reusable Playwright/a11y utilities for follow-on subtasks.
 
-## Current Toggle Behavior (verified against source)
+## Implementation Audit (current repository)
 
-Source files:
-- `src/components/TopBar.tsx`
-- `src/core/theme.ts`
-- `app/layout.tsx`
-- `app/globals.css`
+### Theme toggle selectors and state attributes
 
-Observed contract:
-- Toggle control: `button[data-testid="theme-toggle-switch"]`.
-- Accessibility semantics:
-  - `role="switch"`
-  - `aria-checked` maps `dark=true`, `light=false`
-  - action-oriented `aria-label` (`Switch to light mode` / `Switch to dark mode`)
-- Deterministic state metadata:
+Source: `src/components/TopBar.tsx`
+
+- Primary control selector: `button[data-testid="theme-toggle-switch"]`.
+- Related deterministic selectors:
+  - `[data-testid="theme-toggle-icon"]`
+  - `[data-testid="theme-toggle-label"]`
+  - `[data-testid="theme-toggle-indicator"]`
+- State attributes already exposed for deterministic assertions:
   - `data-theme-current`
   - `data-theme-target`
   - `data-theme-switch-checked`
-- Root coupling:
-  - `html[data-theme="dark|light"]`
-  - `html.dark` class present only for dark theme
-- Persistence:
-  - localStorage key `swarm:theme`
-- Keyboard focus treatment:
-  - `focus-visible` ring classes are present on the toggle button.
 
-## E2E Accessibility Infrastructure (verified)
+### Existing accessibility attributes
 
-Primary test assets:
-- `tests/theme-toggle.spec.ts`
-- `tests/support/themeToggleFixtures.ts`
-- `tests/support/themeToggleHarness.ts`
-- `tests/support/themeToggleA11yHarness.ts`
-- `playwright.config.ts`
+Source: `src/components/TopBar.tsx`, `src/core/theme.ts`
 
-Infrastructure behavior:
-- Shared fixture setup resets localStorage/cookies and installs deterministic dashboard mocks before each test.
-- `gotoThemeDashboard(...)` seeds optional stored theme state, then waits for dashboard readiness.
-- Harness helpers centralize invariants:
-  - theme + ARIA + root/document + storage state (`expectThemeState`, `expectThemeToggleState`)
-  - keyboard tab sequencing to the toggle (`focusThemeToggleViaTab`)
-  - visual label/icon checks (`expectThemeToggleVisualState`)
-  - runtime contrast and focus-ring assertions (`expectThemeContrastToMeetWcagAa`, `expectVisibleKeyboardFocus`)
-- Playwright config runs tests under Chromium/Firefox/WebKit with a Next.js web server unless `PLAYWRIGHT_SKIP_WEBSERVER=1`.
+- Explicit switch semantics are present:
+  - `role="switch"`
+  - `aria-checked` derived from `resolveThemeToggleUiState(theme).isChecked`
+  - `aria-label` is action-oriented:
+    - dark -> `Switch to light mode`
+    - light -> `Switch to dark mode`
+- `title` mirrors semantic state copy for UX/tooling visibility.
+- Decorative children use `aria-hidden="true"` for icon/indicator.
 
-## Existing Coverage vs SWA-65 Assertions
+### Keyboard behavior
 
-Covered today:
-- Keyboard path to toggle and visible keyboard focus (`TT-A11Y-01`).
-- Switch semantics and repeated ARIA/state transitions (`TT-A11Y-02`).
-- `Space` activation state coupling (`TT-A11Y-03`).
-- `Enter` activation state coupling (`TT-A11Y-04`).
-- Runtime contrast checks in both themes for:
-  - `--text-primary` on `--bg-canvas`
-  - `--text-secondary` on `--bg-canvas`
-  - `--text-primary` on `--bg-panel`
-  - computed text/background colors on `[data-testid="theme-toggle-switch"]`.
+- No custom `onKeyDown` handler is implemented on the toggle.
+- Keyboard activation relies on native `<button>` behavior:
+  - `Space` and `Enter` dispatch `click`, invoking `onClick={() => applyTheme(...)}`
+- Focus styling for keyboard users is implemented via `focus-visible:*` classes on the toggle.
+- Tab-order dependency for keyboard-only navigation is currently:
+  - `task-input` -> `create-task-button` -> `model-preset-select` (if visible) -> `theme-toggle-switch`
+  - `model-preset-select` visibility is responsive (`hidden md:flex` container).
 
-Gap requiring follow-up implementation:
-- `tests/support/themeToggleA11yHarness.ts` is still missing two matrix-required probes:
-  - `theme-toggle-icon-text-on-icon-bg` (`--theme-toggle-icon-text` on `--theme-toggle-icon-bg`, `>= 4.5:1`)
-  - `theme-toggle-indicator-on-toggle-bg` (`--theme-toggle-indicator` on `--theme-toggle-bg`, `>= 3.0:1`)
+### Root theme + persistence coupling
+
+Source: `src/components/TopBar.tsx`, `src/core/theme.ts`, `app/layout.tsx`
+
+- Default SSR state: `<html class="dark" data-theme="dark">`.
+- Runtime toggle coupling is already explicit:
+  - dark theme: `html.dark` present, `data-theme="dark"`
+  - light theme: `html.dark` removed, `data-theme="light"`
+- Local persistence key is stable: `localStorage['swarm:theme']`.
+
+## Playwright and A11y Test Infrastructure Audit
+
+### Reusable fixtures/harnesses
+
+Sources: `tests/support/themeToggleFixtures.ts`, `tests/support/themeToggleHarness.ts`, `tests/support/dashboardFixtures.ts`
+
+- `prepareThemeHarness(...)` clears cookies/storage and installs deterministic API mocks.
+- `seedStoredThemeBeforeNavigation(...)` supports controlled pre-navigation theme state.
+- `gotoDashboardReady(...)` blocks until toggle is visible and loading UI is gone.
+- Core reusable assertion helpers:
+  - `expectThemeState(...)`
+  - `expectThemeToggleState(...)`
+  - `expectThemeToggleVisualState(...)`
+  - `focusThemeToggleViaTab(...)`
+  - `beginThemeTransitionCapture(...)` / `endThemeTransitionCapture(...)`
+
+### Existing accessibility/contrast utilities
+
+Source: `tests/support/themeToggleA11yHarness.ts`
+
+- `expectVisibleKeyboardFocus(...)` validates computed focus indicator styles.
+- `expectThemeContrastToMeetWcagAa(...)` performs runtime contrast checks using computed styles and WCAG ratio math.
+- Current built-in probe coverage:
+  - token probes: `body-primary-on-canvas`, `body-secondary-on-canvas`, `body-primary-on-panel`
+  - element probe: `theme-toggle-text-on-toggle-bg`
+
+### Playwright runtime setup
+
+Source: `playwright.config.ts`
+
+- Cross-browser projects: Chromium, Firefox, WebKit.
+- Local web server auto-starts (`next dev` locally, `next start` in CI) unless `PLAYWRIGHT_SKIP_WEBSERVER=1`.
+- Default base URL: `http://127.0.0.1:3000`.
+
+## Coverage Snapshot (for subtask 1/7)
+
+Source: `tests/theme-toggle.spec.ts`
+
+- Already covered:
+  - switch semantics and ARIA transitions (`TT-A11Y-02`)
+  - keyboard tab reachability and focus indicator (`TT-A11Y-01`)
+  - `Space` activation parity and single-transition capture (`TT-A11Y-03`)
+  - `Enter` activation parity and single-transition capture (`TT-A11Y-04`)
+  - WCAG contrast checks in both themes (`TT-A11Y-05/06`) for current probe list
 
 ## Actionable Implementation Guidance
 
-1. Extend `THEME_TOKEN_CONTRAST_PROBES` in `tests/support/themeToggleA11yHarness.ts`:
-   - add icon text/background probe with `minimumRatio: 4.5`
-   - add indicator/toggle background probe with `minimumRatio: 3.0`
-2. Keep `TT-A11Y-05/TT-A11Y-06` as the single execution path for contrast assertions so both themes inherit new probes automatically.
-3. Preserve current harness-first pattern:
-   - if any new invariant is needed, add helper support first, then consume in spec tests.
-4. Keep mixed selector strategy:
-   - `getByTestId(...)` for deterministic interaction
-   - at least one `getByRole('switch', { name: ... })` assertion as semantic guardrail.
+1. Reuse `themeToggleHarness` helpers for all new assertions; do not duplicate low-level ARIA/theme/storage checks inline.
+2. Keep selector strategy split:
+   - interaction/state reads: `getByTestId(...)`
+   - semantic guardrail: at least one `getByRole('switch', { name: ... })`.
+3. Preserve native keyboard activation path (no custom key handlers) and validate single-transition behavior with transition-capture helpers.
+4. For contrast expansion subtasks, extend probe metadata in `tests/support/themeToggleA11yHarness.ts` rather than adding ad hoc contrast logic in spec files.
+5. Maintain viewport-aware focus-order logic through `focusThemeToggleViaTab(...)` because preset select is conditionally visible.
 
-## Audit Result
+## Audit Outcome
 
-- Toggle behavior contract is clear and testable.
-- Test infrastructure is reusable and already aligned with harness-first accessibility assertions.
-- One blocking gap remains: missing icon and indicator contrast probes in the a11y harness.
+- Theme toggle implementation already exposes stable selectors, switch semantics, and deterministic state metadata suitable for E2E accessibility assertions.
+- Playwright infrastructure already provides deterministic setup and reusable helpers for keyboard, semantics, state coupling, and contrast checks.
+- Subtasks 2-7 should focus on incremental assertion/probe expansion using existing harness primitives.

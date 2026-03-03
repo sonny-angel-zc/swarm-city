@@ -1,81 +1,46 @@
-# Theme Toggle Accessibility E2E Matrix (SWA-65)
+# Theme Toggle Accessibility E2E Matrix (SWA-65 Subtask 2/7)
 
-## Scope
+## Goal
 
-This matrix defines SWA-65 subtask 2/7: explicit, testable accessibility acceptance criteria for the dashboard theme toggle.
+Define a single, testable accessibility matrix for toggle behavior covering:
+- Tab focus behavior
+- Space activation
+- Enter activation
+- `role="switch"` semantics
+- `aria-checked` transitions in both light and dark paths
 
-## Accessibility Acceptance Criteria (Subtask 2/7)
+## Behavior Matrix
 
-1. `AC-TT-01` Keyboard Tab order must reach the theme toggle in deterministic top-bar sequence:
-   `task-input` -> `create-task-button` -> `model-preset-select` (when visible) -> `theme-toggle-switch`.
-2. `AC-TT-02` Theme toggle must expose switch semantics at all times:
-   - element is queryable as `role="switch"`
-   - dark mode maps to `aria-checked="true"`
-   - light mode maps to `aria-checked="false"`
-3. `AC-TT-03` Pressing `Space` on focused toggle must activate exactly one transition per keypress and keep focus on the toggle for both starting themes (`dark` and `light`).
-4. `AC-TT-04` Pressing `Enter` on focused toggle must activate exactly one transition per keypress and keep focus on the toggle for both starting themes (`dark` and `light`).
-5. `AC-TT-05` Post-activation state must remain coupled across semantics and product state:
-   - `aria-checked`
-   - `aria-label`
-   - `data-theme-current`
-   - `data-theme-target`
-   - `<html data-theme>`
-   - persisted `localStorage['swarm:theme']`
-6. `AC-TT-06` Dark and light themes must satisfy explicit contrast thresholds for required probes:
-   - text probes `>= 4.5:1`
-   - non-text probes `>= 3.0:1`
-7. `AC-TT-07` Any mismatch in focusability, keyboard activation, role/state semantics, or contrast threshold is a hard fail for E2E acceptance.
-
-## Core Assertion Matrix
-
-| ID | Focus Area | Preconditions | Interaction | Required Assertions | Pass Criteria | Fail Criteria |
-| --- | --- | --- | --- | --- | --- | --- |
-| `TT-A11Y-01` | Tab focus behavior | Initial page load in default theme. | Press `Tab` repeatedly from no focused element. | Focus order is: task input -> create task button -> preset select -> theme toggle. Toggle receives visible keyboard focus. | Theme toggle is reachable in expected top-bar keyboard order without pointer input. | Toggle is skipped, unreachable, or appears before required controls. |
-| `TT-A11Y-02` | Switch semantics | Toggle rendered in DOM (dark or light state). | Query with `getByRole('switch')`. | Toggle exposes `role="switch"` and state-reflective accessible name (`Switch to light mode` when dark, `Switch to dark mode` when light). | Semantic role and label are present and valid for both states. | Missing role/label or stale label that does not reflect next action. |
-| `TT-A11Y-03` | Keyboard activation with `Space` | Toggle focused, starting in dark or light theme. | Press `Space` once. | Toggle remains focused; exactly one transition occurs; `aria-checked`, `aria-label`, `<html data-theme>`, `data-theme-current`, `data-theme-target`, and `localStorage['swarm:theme']` update to the matching target state. | One-and-only-one state transition with full semantic and state coupling in both starting themes. | No transition, multiple transitions, focus loss, or any semantic/product-state mismatch. |
-| `TT-A11Y-04` | Keyboard activation with `Enter` | Toggle focused, starting in dark or light theme. | Press `Enter` once. | Toggle remains focused; exactly one transition occurs; `aria-checked`, `aria-label`, `<html data-theme>`, `data-theme-current`, `data-theme-target`, and `localStorage['swarm:theme']` update to the matching target state. | One-and-only-one state transition with full semantic and state coupling in both starting themes. | No transition, multiple transitions, focus loss, or any semantic/product-state mismatch. |
-| `TT-A11Y-05` | Contrast threshold in dark mode | Theme is dark. | Resolve runtime computed foreground/background pairs and calculate contrast ratio. | Required text probes are `>= 4.5:1`; required non-text indicator probe is `>= 3.0:1`. | All required dark-mode probes meet their thresholds. | Any required dark-mode probe is below its threshold. |
-| `TT-A11Y-06` | Contrast threshold in light mode | Theme toggled to light. | Resolve runtime computed foreground/background pairs and calculate contrast ratio. | Required text probes are `>= 4.5:1`; required non-text indicator probe is `>= 3.0:1`. | All required light-mode probes meet their thresholds. | Any required light-mode probe is below its threshold. |
-
-## Aria-Checked Transition Matrix
-
-| Key | Starting Theme | Before | After | Required Coupled Assertions |
-| --- | --- | --- | --- | --- |
-| `Space` | `dark` | `aria-checked="true"`, `data-theme="dark"` | `aria-checked="false"`, `data-theme="light"` | `aria-label="Switch to dark mode"`, `data-theme-current="light"`, `data-theme-target="dark"`, `localStorage['swarm:theme']="light"` |
-| `Space` | `light` | `aria-checked="false"`, `data-theme="light"` | `aria-checked="true"`, `data-theme="dark"` | `aria-label="Switch to light mode"`, `data-theme-current="dark"`, `data-theme-target="light"`, `localStorage['swarm:theme']="dark"` |
-| `Enter` | `dark` | `aria-checked="true"`, `data-theme="dark"` | `aria-checked="false"`, `data-theme="light"` | `aria-label="Switch to dark mode"`, `data-theme-current="light"`, `data-theme-target="dark"`, `localStorage['swarm:theme']="light"` |
-| `Enter` | `light` | `aria-checked="false"`, `data-theme="light"` | `aria-checked="true"`, `data-theme="dark"` | `aria-label="Switch to light mode"`, `data-theme-current="dark"`, `data-theme-target="light"`, `localStorage['swarm:theme']="dark"` |
-
-## Keyboard Activation Coverage Matrix
-
-| ID | Key | Starting Theme | Expected Result Theme | Pass | Fail |
+| ID | Behavior | Light Mode Expectation | Dark Mode Expectation | Pass Criteria | Fail Criteria |
 | --- | --- | --- | --- | --- | --- |
-| `TT-A11Y-03A` | `Space` | `dark` | `light` | Focus stays on toggle and all coupled state updates match `light`. | Toggle not focused, duplicate transition, or any state mismatch. |
-| `TT-A11Y-03B` | `Space` | `light` | `dark` | Focus stays on toggle and all coupled state updates match `dark`. | Toggle not focused, duplicate transition, or any state mismatch. |
-| `TT-A11Y-04A` | `Enter` | `dark` | `light` | Focus stays on toggle and all coupled state updates match `light`. | Toggle not focused, duplicate transition, or any state mismatch. |
-| `TT-A11Y-04B` | `Enter` | `light` | `dark` | Focus stays on toggle and all coupled state updates match `dark`. | Toggle not focused, duplicate transition, or any state mismatch. |
+| `TT-A11Y-01` | Tab reaches toggle in top-bar order | From initial load, keyboard order reaches toggle after required controls. | Same behavior as light mode. | Focus order: `task-input` -> `create-task-button` -> `model-preset-select` (if visible) -> `theme-toggle-switch`, and toggle has visible keyboard focus. | Toggle skipped, wrong order, or no visible focus indicator when focused. |
+| `TT-A11Y-02` | Toggle exposes switch semantics | Toggle is queryable via `getByRole('switch')`; `aria-checked="false"` when active theme is light. | Toggle is queryable via `getByRole('switch')`; `aria-checked="true"` when active theme is dark. | `role="switch"` is always present and `aria-checked` matches current theme state. | Missing/incorrect role, stale `aria-checked`, or role/state mismatch at any step. |
+| `TT-A11Y-03` | Space key activates exactly one transition | `Space` changes light -> dark, keeps focus on toggle, and updates coupled state. | `Space` changes dark -> light, keeps focus on toggle, and updates coupled state. | One keypress causes one transition; focus remains on toggle; `aria-checked`, `aria-label`, `data-theme-current`, `data-theme-target`, `<html data-theme>`, and `localStorage['swarm:theme']` are synchronized. | No transition, duplicate transition, focus loss, or any coupled-state mismatch. |
+| `TT-A11Y-04` | Enter key activates exactly one transition | `Enter` changes light -> dark, keeps focus on toggle, and updates coupled state. | `Enter` changes dark -> light, keeps focus on toggle, and updates coupled state. | One keypress causes one transition; focus remains on toggle; `aria-checked`, `aria-label`, `data-theme-current`, `data-theme-target`, `<html data-theme>`, and `localStorage['swarm:theme']` are synchronized. | No transition, duplicate transition, focus loss, or any coupled-state mismatch. |
 
-## Contrast Assertion Set
+## `aria-checked` Transition Truth Table
 
-| Probe ID | Foreground Token | Background Token | Minimum Ratio | Applies To |
-| --- | --- | --- | --- | --- |
-| `body-primary-on-canvas` | `--text-primary` | `--bg-canvas` | `4.5:1` | Dark + Light |
-| `body-secondary-on-canvas` | `--text-secondary` | `--bg-canvas` | `4.5:1` | Dark + Light |
-| `body-primary-on-panel` | `--text-primary` | `--bg-panel` | `4.5:1` | Dark + Light |
-| `theme-toggle-text-on-toggle-bg` | `--theme-toggle-text` | `--theme-toggle-bg` | `4.5:1` | Dark + Light |
-| `theme-toggle-icon-text-on-icon-bg` | `--theme-toggle-icon-text` | `--theme-toggle-icon-bg` | `4.5:1` | Dark + Light |
-| `theme-toggle-indicator-on-toggle-bg` | `--theme-toggle-indicator` | `--theme-toggle-bg` | `3.0:1` | Dark + Light |
+| Key | Starting Theme | `aria-checked` Before | `aria-checked` After | Theme After | Pass Criteria | Fail Criteria |
+| --- | --- | --- | --- | --- | --- | --- |
+| `Space` | `light` | `false` | `true` | `dark` | Transition is exactly `false -> true` and coupled state updates to dark. | Value unchanged, flips twice, or diverges from effective theme. |
+| `Space` | `dark` | `true` | `false` | `light` | Transition is exactly `true -> false` and coupled state updates to light. | Value unchanged, flips twice, or diverges from effective theme. |
+| `Enter` | `light` | `false` | `true` | `dark` | Transition is exactly `false -> true` and coupled state updates to dark. | Value unchanged, flips twice, or diverges from effective theme. |
+| `Enter` | `dark` | `true` | `false` | `light` | Transition is exactly `true -> false` and coupled state updates to light. | Value unchanged, flips twice, or diverges from effective theme. |
 
-## Notes
+## Coupled State Contract (Post Activation)
 
-- Contrast checks intentionally use runtime computed CSS values to validate shipped tokens, not hard-coded hex assumptions.
-- Keyboard assertions validate interaction parity and semantic state alignment (`role`, `aria-checked`, label, and theme dataset).
+After each valid `Space` or `Enter` activation, all fields below must represent the same resolved theme:
+- `role="switch"` remains present.
+- `aria-checked` matches resolved theme (`dark=true`, `light=false`).
+- `aria-label` describes the next available action.
+- `data-theme-current` equals resolved current theme.
+- `data-theme-target` equals next toggle target theme.
+- `<html data-theme>` equals resolved current theme.
+- `localStorage['swarm:theme']` equals resolved current theme.
 
-## Test Mapping (Subtask 2/7)
+## Playwright Mapping
 
-- `TT-A11Y-01`: Covered by Playwright test `TT-A11Y-01 moves focus to theme toggle using keyboard-only Tab navigation` in `tests/theme-toggle.spec.ts`.
-- `TT-A11Y-02`: Covered by Playwright test `TT-A11Y-02 keeps switch semantics and updates ARIA state on repeated interactions` in `tests/theme-toggle.spec.ts`.
-- `TT-A11Y-03`: Covered by Playwright test `TT-A11Y-03 toggles theme with Space key from dark to light with deterministic state updates` in `tests/theme-toggle.spec.ts`.
-- `TT-A11Y-04`: Covered by Playwright test `TT-A11Y-04 toggles theme with Enter key from light to dark with deterministic state updates` in `tests/theme-toggle.spec.ts`.
-- `TT-A11Y-05`: Covered by Playwright test `TT-A11Y-05/TT-A11Y-06 meets WCAG AA contrast thresholds for key theme foreground/background combinations` while `data-theme="dark"`.
-- `TT-A11Y-06`: Covered by Playwright test `TT-A11Y-05/TT-A11Y-06 meets WCAG AA contrast thresholds for key theme foreground/background combinations` after toggling to `data-theme="light"`.
+- `TT-A11Y-01` -> `tests/theme-toggle.spec.ts` test: keyboard Tab focus path.
+- `TT-A11Y-02` -> `tests/theme-toggle.spec.ts` test: switch semantics and repeated ARIA validation.
+- `TT-A11Y-03` -> `tests/theme-toggle.spec.ts` test: `Space` transition behavior in both theme directions.
+- `TT-A11Y-04` -> `tests/theme-toggle.spec.ts` test: `Enter` transition behavior in both theme directions.

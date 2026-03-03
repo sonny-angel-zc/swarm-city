@@ -1,6 +1,7 @@
 import { OverlayMode } from './types';
 
-type OverlayEmphasis = 0 | 1 | 2 | 3;
+export type OverlayEmphasis = 0 | 1 | 2 | 3;
+export type OverlayEmphasisLabel = 'off' | 'supporting' | 'primary' | 'dominant';
 
 export type OverlayModeContract = {
   mode: OverlayMode;
@@ -18,8 +19,19 @@ export type OverlayModeContract = {
 export const CITY_OVERLAY_COPY = {
   panelLabel: 'City view mode',
   panelHeading: 'View mode',
-  keyboardHint: 'Use Arrow keys, Home, or End to switch modes',
+  panelSubheading: 'Tune what stands out as roads, transit, parks, and city life evolve.',
+  impactHeading: 'Visual impact',
+  keyboardHint: 'Use Arrow keys, Home, or End to switch modes. Enter or Space activates the focused tab.',
 } as const;
+
+export const CITY_OVERLAY_DATA_CONTRACT_VERSION = 'swa-68-subtask-2';
+
+export const CITY_OVERLAY_EMPHASIS_COPY: Record<OverlayEmphasis, OverlayEmphasisLabel> = {
+  0: 'off',
+  1: 'supporting',
+  2: 'primary',
+  3: 'dominant',
+};
 
 export const CITY_OVERLAY_CONTRACT: Record<OverlayMode, OverlayModeContract> = {
   activity: {

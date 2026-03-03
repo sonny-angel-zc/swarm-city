@@ -28,6 +28,8 @@ import {
   resolveTileOccupant,
 } from '@/core/cityVisualSpec';
 import { CITY_CANVAS_RENDER_PIPELINE_VERSION } from '@/core/cityCanvasRenderPipeline';
+import { CITY_OVERLAY_CONTRACT, CITY_OVERLAY_DATA_CONTRACT_VERSION } from '@/core/cityOverlayContract';
+import type { DistrictZone, TaskBuilding } from '@/core/districtLayout';
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
@@ -477,6 +479,7 @@ export default function CityCanvas() {
   const panCamera = useSwarmStore(s => s.panCamera);
   const setZoom = useSwarmStore(s => s.setZoom);
   const overlayMode = useSwarmStore(s => s.overlayMode);
+  const overlayContract = CITY_OVERLAY_CONTRACT[overlayMode];
 
   // Track coins tossed into the fountain
   const coinCountRef = useRef(0);
@@ -965,17 +968,40 @@ export default function CityCanvas() {
           ctx.lineWidth = 0.5;
           ctx.stroke();
         } else if (occupant === 'park') {
-          ctx.fillStyle = terrain.parkBase;
-          ctx.fill();
-          ctx.strokeStyle = terrain.parkPath;
-          ctx.lineWidth = 0.4;
-          ctx.stroke();
+          // Check if this park tile is in a district
+          const districtForTile = state.districts.find((d: DistrictZone) => d.tiles.has(tileKey));
+          if (districtForTile) {
+            // District ground — tinted with project color
+            const dColor = districtForTile.color || terrain.parkBase;
+            ctx.fillStyle = dColor + '40'; // district tint
+            ctx.fill();
+            ctx.strokeStyle = dColor + '60';
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = terrain.parkBase;
+            ctx.fill();
+            ctx.strokeStyle = terrain.parkPath;
+            ctx.lineWidth = 0.4;
+            ctx.stroke();
+          }
         } else {
-          ctx.fillStyle = terrain.grassBase;
-          ctx.fill();
-          ctx.strokeStyle = terrain.grassEdge;
-          ctx.lineWidth = 0.3;
-          ctx.stroke();
+          // Check if this grass tile is in a district
+          const districtForGrass = state.districts.find((d: DistrictZone) => d.tiles.has(tileKey));
+          if (districtForGrass) {
+            const dColor = districtForGrass.color || terrain.grassBase;
+            ctx.fillStyle = dColor + '35'; // district tint on grass
+            ctx.fill();
+            ctx.strokeStyle = dColor + '50';
+            ctx.lineWidth = 0.4;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = terrain.grassBase;
+            ctx.fill();
+            ctx.strokeStyle = terrain.grassEdge;
+            ctx.lineWidth = 0.3;
+            ctx.stroke();
+          }
           if (seed % 2 === 0) {
             ctx.beginPath();
             ctx.ellipse(pos.x, pos.y, TILE_WIDTH * 0.12, TILE_HEIGHT * 0.08, 0, 0, Math.PI * 2);
@@ -1087,6 +1113,89 @@ export default function CityCanvas() {
     );
     for (const cfg of sortedBuildings) {
       drawBuilding(ctx, cfg.role, time, darkness, overlay);
+    }
+
+    // ─── Task Buildings (small buildings in districts) ───────────────────────
+    for (const tb of state.taskBuildings as TaskBuilding[]) {
+      const pos = gridToScreen(tb.gridX, tb.gridY);
+      const bw = TILE_WIDTH * 0.35;
+      const bh = tb.height;
+
+      if (tb.state === 'empty') {
+        // Empty lot — green field with a small stake
+        ctx.fillStyle = tb.color + '30';
+        ctx.beginPath();
+        ctx.ellipse(pos.x, pos.y, bw * 0.5, bw * 0.25, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Stake
+        ctx.strokeStyle = '#8B7355';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y);
+        ctx.lineTo(pos.x, pos.y - 8);
+        ctx.stroke();
+        // Flag
+        ctx.fillStyle = tb.color + '80';
+        ctx.beginPath();
+        ctx.moveTo(pos.x, pos.y - 8);
+        ctx.lineTo(pos.x + 5, pos.y - 6);
+        ctx.lineTo(pos.x, pos.y - 4);
+        ctx.fill();
+      } else if (tb.state === 'construction') {
+        // Construction site — scaffolding
+        ctx.globalAlpha = 0.7;
+        drawIsoBox(ctx, pos.x, pos.y, bw, bw * 0.5, bh * 0.6, '#808080');
+        ctx.globalAlpha = 1;
+        // Scaffolding lines
+        ctx.strokeStyle = tb.color + 'AA';
+        ctx.lineWidth = 0.8;
+        ctx.setLineDash([2, 2]);
+        ctx.beginPath();
+        ctx.moveTo(pos.x - bw * 0.3, pos.y);
+        ctx.lineTo(pos.x - bw * 0.3, pos.y - bh * 0.6);
+        ctx.moveTo(pos.x + bw * 0.3, pos.y);
+        ctx.lineTo(pos.x + bw * 0.3, pos.y - bh * 0.6);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // Activity particles
+        if (Math.sin(time * 3 + tb.gridX * 7) > 0.5) {
+          ctx.fillStyle = '#FFD700';
+          ctx.beginPath();
+          ctx.arc(pos.x + Math.sin(time * 5) * 3, pos.y - bh * 0.4, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else {
+        // Completed building — solid mini building
+        drawIsoBox(ctx, pos.x, pos.y, bw, bw * 0.5, bh, tb.color);
+        // Window detail
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        const winY = pos.y - bh * 0.5;
+        ctx.fillRect(pos.x - 2, winY, 1.5, 2);
+        ctx.fillRect(pos.x + 1, winY, 1.5, 2);
+        // Roof accent
+        ctx.fillStyle = tb.color;
+        ctx.globalAlpha = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(pos.x - bw * 0.25, pos.y - bh);
+        ctx.lineTo(pos.x, pos.y - bh - 4);
+        ctx.lineTo(pos.x + bw * 0.25, pos.y - bh);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // ─── District Labels ───────────────────────────────────────────────────
+    for (const dz of state.districts as DistrictZone[]) {
+      const centerX = (dz.gridBounds.x1 + dz.gridBounds.x2) / 2;
+      const centerY = (dz.gridBounds.y1 + dz.gridBounds.y2) / 2;
+      const labelPos = gridToScreen(centerX, centerY);
+      ctx.save();
+      ctx.font = '8px sans-serif';
+      ctx.fillStyle = dz.color + 'CC';
+      ctx.textAlign = 'center';
+      ctx.fillText(dz.name.replace(/[🏗️🎨📊🔄]/g, '').trim(), labelPos.x, labelPos.y - 50);
+      ctx.restore();
     }
 
     // ─── Fountain spray (jets + mist, above buildings) ──────────────────────
@@ -1325,7 +1434,14 @@ export default function CityCanvas() {
       role="img"
       aria-label="Swarm city isometric canvas"
       data-testid="city-canvas"
+      data-overlay-contract-version={CITY_OVERLAY_DATA_CONTRACT_VERSION}
       data-overlay-mode={overlayMode}
+      data-overlay-focus={overlayContract.focusArea}
+      data-overlay-roads-emphasis={overlayContract.roadsEmphasis}
+      data-overlay-transit-emphasis={overlayContract.transitEmphasis}
+      data-overlay-greenspace-emphasis={overlayContract.greenspaceEmphasis}
+      data-overlay-city-life-emphasis={overlayContract.cityLifeEmphasis}
+      data-overlay-spend-emphasis={overlayContract.spendEmphasis}
       data-render-pipeline-version={CITY_CANVAS_RENDER_PIPELINE_VERSION}
       className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
       onClick={handleClick}

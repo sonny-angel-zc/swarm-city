@@ -35,6 +35,7 @@ import {
   getDocumentById,
   getPlanRegistry,
 } from './planRegistry';
+import { buildDistrictZones, placeTaskBuildings, type DistrictZone, type TaskBuilding } from './districtLayout';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -92,6 +93,8 @@ type SwarmStore = {
   backlog: BacklogItem[];
   linear: LinearSyncState;
   autonomous: AutonomousStatus & { lastEventId: number };
+  districts: DistrictZone[];
+  taskBuildings: TaskBuilding[];
 // Docs
   docsRegistry: PlanDocument[];
   docsFilter: 'all' | DocCategory;
@@ -267,6 +270,8 @@ rateLimiter: new RateLimitManager(DEFAULT_RATE_LIMITS),
     lastSyncAt: null,
     error: null,
     projects: [],
+    districts: [],
+    taskBuildings: [],
   },
   autonomous: {
     enabled: false,
@@ -1280,8 +1285,12 @@ docsRegistry: getPlanRegistry(),
       const merged = [...fetched, ...local]
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 100);
+      const districts = buildDistrictZones(synced.projects);
+      const taskBuildings = placeTaskBuildings(merged, districts);
       set({
         backlog: merged,
+        districts,
+        taskBuildings,
         linear: {
           connected: true,
           syncing: false,
