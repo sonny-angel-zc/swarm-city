@@ -12,6 +12,15 @@ const DEFAULT_PROVIDER: 'anthropic' | 'openai' =
     ? 'openai'
     : 'anthropic';
 
+function buildClaudeEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  const configuredKey = env.SWARM_ANTHROPIC_API_KEY?.trim();
+  if (configuredKey && !env.ANTHROPIC_API_KEY) {
+    env.ANTHROPIC_API_KEY = configuredKey;
+  }
+  return env;
+}
+
 // ─── SSE Event Types ──────────────────────────────────────────────────────────
 
 export type SSEEvent =
@@ -646,7 +655,7 @@ function runAnthropicAgent(
     const proc = spawn(
       claudeBin,
       ['-p', '--dangerously-skip-permissions', '--model', model, '--output-format', 'stream-json', '--verbose'],
-      { cwd: workDir, env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] },
+      { cwd: workDir, env: buildClaudeEnv(), stdio: ['pipe', 'pipe', 'pipe'] },
     );
 
     proc.stdin.write(fullPrompt);
@@ -959,7 +968,7 @@ export async function runAnthropicExec(params: {
       ['-p', '--dangerously-skip-permissions', '--model', params.model ?? DEFAULT_ANTHROPIC_MODEL, '--output-format', 'stream-json', '--verbose'],
       {
         cwd: params.workDir,
-        env: { ...process.env },
+        env: buildClaudeEnv(),
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );

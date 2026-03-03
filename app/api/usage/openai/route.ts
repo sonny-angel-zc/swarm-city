@@ -88,10 +88,16 @@ async function fetchOpenAIJson(url: string, apiKey: string): Promise<unknown> {
   }
 
   if (!res.ok) {
+    const apiMessage =
+      json && typeof json === 'object'
+        ? (json as { error?: { message?: string } }).error?.message
+        : undefined;
     const message =
-      (json && typeof json === 'object' && (json as { error?: { message?: string } }).error?.message) ||
-      text ||
-      `OpenAI API request failed (${res.status})`;
+      (typeof apiMessage === 'string' && apiMessage.trim().length > 0
+        ? apiMessage
+        : text.trim().length > 0
+          ? text
+          : `OpenAI API request failed (${res.status})`);
     throw new Error(message);
   }
 

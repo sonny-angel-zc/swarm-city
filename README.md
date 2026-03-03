@@ -58,6 +58,12 @@ http://localhost:3000
 - `SWARM_CODEX_BIN` (default: `codex`): Codex executable name/path.
 - `SWARM_CLAUDE_BIN` (default: `claude`): Claude executable name/path.
 - `SWARM_CODEX_ISOLATED_CONTEXT` (default: `true`): isolates Codex runs per task.
+- `SWARM_ANTHROPIC_API_KEY` (optional): Anthropic token injected as `ANTHROPIC_API_KEY` for Claude CLI runs (useful for token-based Claude Code auth in server workflows).
+
+### Rate Limiting Defaults
+
+- Claude/Anthropic models are configured with stricter burst protection by default (`3 requests / 15s`, `45s cooldown`) to reduce rate-limit churn.
+- OpenAI defaults remain less strict for Codex-centric workflows.
 
 ### Optional Codex Agent-ID Mapping
 

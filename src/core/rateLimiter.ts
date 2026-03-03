@@ -141,7 +141,10 @@ export class RateLimitManager {
 }
 
 export const DEFAULT_RATE_LIMITS: Partial<Record<RateLimitKey, RateLimitConfig>> = {
-  'anthropic:sonnet': { maxRequests: 6, windowMs: 10_000, cooldownMs: 12_000 },
+  // Claude Code is more sensitive to burst traffic and should back off earlier.
+  'anthropic:sonnet': { maxRequests: 3, windowMs: 15_000, cooldownMs: 45_000 },
+  'anthropic:claude-sonnet-4-5': { maxRequests: 3, windowMs: 15_000, cooldownMs: 45_000 },
+  'anthropic:claude-3-7-sonnet': { maxRequests: 3, windowMs: 15_000, cooldownMs: 45_000 },
   'openai:gpt-5.3-codex': { maxRequests: 5, windowMs: 10_000, cooldownMs: 12_000 },
   'openai:gpt-4.1': { maxRequests: 8, windowMs: 10_000, cooldownMs: 10_000 },
   'openai:gpt-4o-mini': { maxRequests: 14, windowMs: 10_000, cooldownMs: 8_000 },

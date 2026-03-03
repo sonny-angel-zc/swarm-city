@@ -1144,7 +1144,7 @@ export default function CityCanvas() {
       } else if (tb.state === 'construction') {
         // Construction site — scaffolding
         ctx.globalAlpha = 0.7;
-        drawIsoBox(ctx, pos.x, pos.y, bw, bw * 0.5, bh * 0.6, '#808080');
+        drawIsoBox(ctx, pos.x, pos.y, bw, bw * 0.5, bh * 0.6, '#8a8a8a', '#6f6f6f', '#9a9a9a');
         ctx.globalAlpha = 1;
         // Scaffolding lines
         ctx.strokeStyle = tb.color + 'AA';
@@ -1166,7 +1166,7 @@ export default function CityCanvas() {
         }
       } else {
         // Completed building — solid mini building
-        drawIsoBox(ctx, pos.x, pos.y, bw, bw * 0.5, bh, tb.color);
+        drawIsoBox(ctx, pos.x, pos.y, bw, bw * 0.5, bh, tb.color, tb.color, tb.color);
         // Window detail
         ctx.fillStyle = 'rgba(255,255,255,0.3)';
         const winY = pos.y - bh * 0.5;

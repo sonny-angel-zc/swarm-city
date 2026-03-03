@@ -42,7 +42,16 @@ function registry(): AgentRegistry {
 }
 
 export function getAgentStatus(role: AgentRole): ServerAgentState {
-  return { ...(registry().get(role) ?? { status: 'idle', currentTask: null, lastOutput: null, updatedAt: Date.now() }) };
+  return {
+    ...(registry().get(role) ?? {
+      status: 'idle',
+      currentTask: null,
+      lastOutput: null,
+      updatedAt: Date.now(),
+      tokensUsed: 0,
+      taskStartedAt: null,
+    }),
+  };
 }
 
 export function setAgentStatus(role: AgentRole, status: ServerAgentStatus, task: string | null): void {
@@ -74,6 +83,8 @@ export function setAgentLastOutput(role: AgentRole, output: string | null): void
     currentTask: null,
     lastOutput: null,
     updatedAt: Date.now(),
+    tokensUsed: 0,
+    taskStartedAt: null,
   };
   registry().set(role, {
     ...existing,
