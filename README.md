@@ -96,8 +96,11 @@ SWARM_CODEX_AGENT_MAP='{"default":"agent-default","engineer":"agent-eng","qa":"a
 - `npm run test:smoke:preflight`: validate smoke prerequisites and server readiness (`SMOKE_PREFLIGHT_MODE=listen|check|skip`, default `listen`).
 - `npm run test:smoke`: run smoke test only (local quick run) after preflight checks. Supports `SMOKE_HOST`/`SMOKE_PORT` (defaults: `127.0.0.1`/`3000`).
 - `npm run test:smoke:ci`: run smoke test with CI semantics (single worker, zero retries) after preflight checks. Supports `SMOKE_HOST`/`SMOKE_PORT` (defaults: `127.0.0.1`/`3000`).
+- `npm run test:theme:guardrails`: run theme regression guardrails locally in Chromium.
+- `npm run test:theme:guardrails:ci`: run theme guardrails with CI semantics (single worker, zero retries).
 
 Smoke docs: [`docs/testing/smoke-tests.md`](docs/testing/smoke-tests.md)
+Theme guardrail docs: [`docs/testing/theme-regression-guardrails-swa-66-subtask-7.md`](docs/testing/theme-regression-guardrails-swa-66-subtask-7.md)
 
 ## High-Level Architecture
 

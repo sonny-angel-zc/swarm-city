@@ -185,6 +185,44 @@ export type BacklogStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
 
 export type BacklogSource = 'local' | 'linear_stub' | 'linear';
 
+export type StrategicProjectStatus = 'todo' | 'in_progress' | 'done';
+
+// `linear` means progress came from Linear project.progress (normalized to 0-1).
+// `issues_fallback` means progress was auto-derived from done/total issue ratio
+// (with zero-issue guard -> 0) when Linear progress is unavailable.
+export type ProjectProgressSource = 'linear' | 'issues_fallback';
+
+export type ProjectIssueBreakdownBucket = 'todo' | 'in_progress' | 'done';
+
+export type LinearProjectIssueBreakdown = {
+  todo: number;
+  in_progress: number;
+  done: number;
+};
+
+export type LinearProjectDataContract = {
+  id: string;
+  name: string;
+  description: string | null;
+  progress: number; // 0-1
+  issueBreakdown: LinearProjectIssueBreakdown;
+};
+
+export type LinearProjectContract = LinearProjectDataContract & {
+  state: string | null; // raw Linear project state label when available
+  issues: number;
+
+  // Compatibility fields used by current UI/store. Keep in sync with canonical contract above.
+  districtId: string;
+  status: StrategicProjectStatus;
+  progressSource: ProjectProgressSource;
+  totalIssues: number;
+  doneIssues: number;
+  icon?: string | null;
+  color?: string | null;
+  isUnassigned: boolean;
+};
+
 export type BacklogItem = {
   id: string;
   title: string;
@@ -197,6 +235,12 @@ export type BacklogItem = {
   ownerName?: string;
   statusLabel?: string;
   labels?: string[];
+  projectId?: string;
+  projectName?: string;
+  projectDistrictId?: string;
+  projectStatus?: StrategicProjectStatus;
+  projectProgress?: number; // 0-1
+  projectProgressSource?: ProjectProgressSource;
   updatedAt: number;
   swarmTaskId?: string;    // links to an active swarm orchestrator task
   isSwarmTarget?: boolean; // true when swarm is currently running on this item
@@ -207,6 +251,7 @@ export type LinearSyncState = {
   syncing: boolean;
   lastSyncAt: number | null;
   error: string | null;
+  projects: LinearProjectContract[];
 };
 
 export type AutonomousEventType = 'info' | 'warning' | 'error';

@@ -266,6 +266,7 @@ rateLimiter: new RateLimitManager(DEFAULT_RATE_LIMITS),
     syncing: false,
     lastSyncAt: null,
     error: null,
+    projects: [],
   },
   autonomous: {
     enabled: false,
@@ -1273,7 +1274,8 @@ docsRegistry: getPlanRegistry(),
   syncBacklog: async () => {
     set(state => ({ linear: { ...state.linear, syncing: true, error: null } }));
     try {
-      const fetched = await syncFromLinear();
+      const synced = await syncFromLinear();
+      const fetched = synced.backlog;
       const local = get().backlog.filter(item => item.source === 'local');
       const merged = [...fetched, ...local]
         .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -1285,6 +1287,7 @@ docsRegistry: getPlanRegistry(),
           syncing: false,
           lastSyncAt: Date.now(),
           error: null,
+          projects: synced.projects,
         },
       });
     } catch (err) {
@@ -1392,19 +1395,69 @@ docsRegistry: getPlanRegistry(),
         for (const role of Object.keys(nextAgents) as AgentRole[]) {
           const remote = data[role];
           if (!remote) continue;
+          const prior = nextAgents[role];
+          const priorMeta = prior as typeof prior & { _lastRemoteOutput?: string | null; _lastRemoteUpdatedAt?: number };
           const mappedStatus = mapServerStatus(remote.status);
           const currentTask = remote.currentTask && remote.currentTask.trim().length > 0
             ? remote.currentTask
             : null;
+          const nextLog = [...prior.log];
+
+          const statusChanged = mappedStatus !== prior.status;
+          const taskChanged = currentTask !== prior.currentTask;
+          if (statusChanged || taskChanged) {
+            if (mappedStatus === 'working' && currentTask) {
+              nextLog.push({
+                timestamp: remote.updatedAt || Date.now(),
+                message: `Working: ${currentTask}`,
+                type: 'info',
+              });
+            } else if (mappedStatus === 'blocked') {
+              nextLog.push({
+                timestamp: remote.updatedAt || Date.now(),
+                message: currentTask ? `Blocked: ${currentTask}` : 'Blocked',
+                type: 'error',
+              });
+            } else if (mappedStatus === 'idle') {
+              nextLog.push({
+                timestamp: remote.updatedAt || Date.now(),
+                message: 'Idle',
+                type: 'info',
+              });
+            }
+          }
+
+          const remoteOutput = remote.lastOutput?.trim() || null;
+          const outputChanged = remoteOutput && (
+            remoteOutput !== (priorMeta._lastRemoteOutput ?? null) ||
+            (remote.updatedAt ?? 0) > (priorMeta._lastRemoteUpdatedAt ?? 0)
+          );
+          if (outputChanged) {
+            const lines = remoteOutput.split('\n').map(line => line.trim()).filter(Boolean);
+            const lastLine = (lines[lines.length - 1] || remoteOutput).slice(0, 220);
+            nextLog.push({
+              timestamp: remote.updatedAt || Date.now(),
+              message: lastLine,
+              type: 'output',
+            });
+          }
+
           nextAgents[role] = {
-            ...nextAgents[role],
+            ...prior,
             status: mappedStatus,
             currentTask,
-            progress: mappedStatus === 'idle' ? 0 : nextAgents[role].progress,
-            contextUsed: remote.tokensUsed ? Math.min(1, remote.tokensUsed / (remote.tokensUsed + 100000)) : nextAgents[role].contextUsed,
-          } as typeof nextAgents[typeof role] & { _tokensUsed?: number };
+            progress: mappedStatus === 'idle' ? 0 : prior.progress,
+            contextUsed: remote.tokensUsed ? Math.min(1, remote.tokensUsed / (remote.tokensUsed + 100000)) : prior.contextUsed,
+            log: nextLog.slice(-30),
+          } as typeof nextAgents[typeof role] & {
+            _tokensUsed?: number;
+            _lastRemoteOutput?: string | null;
+            _lastRemoteUpdatedAt?: number;
+          };
           // Store raw token count on the agent for the sidebar to read
           (nextAgents[role] as Record<string, unknown>)._tokensUsed = remote.tokensUsed ?? 0;
+          (nextAgents[role] as Record<string, unknown>)._lastRemoteOutput = remoteOutput;
+          (nextAgents[role] as Record<string, unknown>)._lastRemoteUpdatedAt = remote.updatedAt ?? Date.now();
         }
         return { agents: nextAgents };
       });

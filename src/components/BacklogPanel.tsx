@@ -1,8 +1,16 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useSwarmStore } from '../core/store';
 import { BacklogItem, BacklogPriority } from '../core/types';
+import { UNASSIGNED_PROJECT_ID } from '../core/linearProject';
+import {
+  STRATEGIC_COPY,
+  mapBacklogGroupLabel,
+  mapStrategicProgressSourceLabel,
+  mapStrategicStatusColor,
+  mapStrategicStatusLabel,
+} from '../core/strategicLayerContract';
 
 const PRIORITY_COLORS: Record<BacklogPriority, string> = {
   P0: '#ef4444',
@@ -17,6 +25,8 @@ const STATUS_ICONS: Record<string, string> = {
   blocked: '⊘',
   done: '●',
 };
+
+type DistrictFilterValue = 'all' | string;
 
 function IssueCard({ item }: { item: BacklogItem }) {
   const updateIssueStatus = useSwarmStore(s => s.updateLinearIssueStatus);
@@ -295,13 +305,76 @@ export default function BacklogPanel() {
   const syncLinear = useSwarmStore(s => s.syncLinear);
   const [showCreate, setShowCreate] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [selectedDistrict, setSelectedDistrict] = useState<DistrictFilterValue>('all');
+  const districtTabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  const sortedProjects = useMemo(() => {
+    const statusRank: Record<string, number> = {
+      in_progress: 0,
+      todo: 1,
+      done: 2,
+    };
+
+    return [...linear.projects].sort((a, b) => {
+      const statusDelta = (statusRank[a.status] ?? 99) - (statusRank[b.status] ?? 99);
+      if (statusDelta !== 0) return statusDelta;
+      const progressDelta = b.progress - a.progress;
+      if (progressDelta !== 0) return progressDelta;
+      return a.name.localeCompare(b.name);
+    });
+  }, [linear.projects]);
+
+  const visibleBacklog = useMemo(() => {
+    if (selectedDistrict === 'all') return backlog;
+    if (selectedDistrict === UNASSIGNED_PROJECT_ID) {
+      return backlog.filter((item) => !item.projectId || item.projectId === UNASSIGNED_PROJECT_ID);
+    }
+    return backlog.filter((item) => item.projectId === selectedDistrict);
+  }, [backlog, selectedDistrict]);
 
   const grouped = {
-    in_progress: backlog.filter(i => i.status === 'in_progress'),
-    todo: backlog.filter(i => i.status === 'todo'),
-    blocked: backlog.filter(i => i.status === 'blocked'),
-    done: backlog.filter(i => i.status === 'done'),
+    in_progress: visibleBacklog.filter(i => i.status === 'in_progress'),
+    todo: visibleBacklog.filter(i => i.status === 'todo'),
+    blocked: visibleBacklog.filter(i => i.status === 'blocked'),
+    done: visibleBacklog.filter(i => i.status === 'done'),
   };
+
+  const districtTabs = [
+    {
+      key: 'all',
+      districtId: 'all',
+      projectId: 'all',
+      name: STRATEGIC_COPY.allDistricts,
+      issues: backlog.length,
+      progress: null as number | null,
+      status: null as string | null,
+      progressSource: null as BacklogItem['projectProgressSource'] | null,
+      issueBreakdown: null as { todo: number; in_progress: number; done: number } | null,
+    },
+    ...sortedProjects.map((project) => ({
+      key: project.id,
+      districtId: project.districtId,
+      projectId: project.id,
+      name: project.isUnassigned ? STRATEGIC_COPY.unassigned : project.name,
+      issues: project.issues,
+      progress: project.progress,
+      status: project.status,
+      progressSource: project.progressSource as BacklogItem['projectProgressSource'],
+      issueBreakdown: project.issueBreakdown,
+    })),
+  ];
+
+  const selectedDistrictLabel =
+    selectedDistrict === 'all'
+      ? STRATEGIC_COPY.allDistricts
+      : districtTabs.find((tab) => tab.projectId === selectedDistrict)?.name ?? STRATEGIC_COPY.unassigned;
+  const selectedDistrictTab = districtTabs.find((tab) => tab.projectId === selectedDistrict) ?? districtTabs[0];
+  const selectedDistrictStatusLabel = selectedDistrictTab?.status ? mapStrategicStatusLabel(selectedDistrictTab.status) : null;
+  const selectedDistrictProgressPercent =
+    selectedDistrictTab && selectedDistrictTab.projectId !== 'all' && typeof selectedDistrictTab.progress === 'number'
+      ? Math.round(Math.max(0, Math.min(1, selectedDistrictTab.progress)) * 100)
+      : null;
+  const backlogListRegionId = 'strategic-backlog-list';
 
   return (
     <div
@@ -411,8 +484,223 @@ export default function BacklogPanel() {
         )}
       </div>
 
+      <div
+        data-testid="strategic-districts"
+        style={{
+          padding: '10px 12px',
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+        }}
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0' }}>{STRATEGIC_COPY.title}</span>
+          <span style={{ fontSize: 10, color: '#9ca3af' }}>{STRATEGIC_COPY.helper}</span>
+        </div>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
+            fontSize: 10,
+            color: '#cbd5e1',
+            background: 'rgba(148,163,184,0.08)',
+            border: '1px solid rgba(148,163,184,0.2)',
+            borderRadius: 8,
+            padding: '6px 8px',
+          }}
+          data-backlog-filter-project-name={selectedDistrictLabel}
+        >
+          <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {STRATEGIC_COPY.filterSummary}: {selectedDistrictLabel}
+            {selectedDistrictStatusLabel ? ` • ${selectedDistrictStatusLabel}` : ''}
+            {selectedDistrictProgressPercent != null ? ` • ${selectedDistrictProgressPercent}%` : ''}
+          </span>
+          {selectedDistrict !== 'all' && (
+            <button
+              onClick={() => setSelectedDistrict('all')}
+              style={{
+                background: 'rgba(148,163,184,0.12)',
+                color: '#cbd5e1',
+                border: '1px solid rgba(148,163,184,0.35)',
+                borderRadius: 999,
+                padding: '2px 8px',
+                fontSize: 10,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {STRATEGIC_COPY.resetFocus}
+            </button>
+          )}
+        </div>
+
+        <div
+          role="tablist"
+          aria-label="Strategic districts"
+          style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}
+        >
+          {districtTabs.map((tab, index) => {
+            const isSelected = selectedDistrict === tab.projectId;
+            const hasMetrics = tab.projectId !== 'all';
+            const progressPercent = hasMetrics && typeof tab.progress === 'number' ? Math.round(Math.max(0, Math.min(1, tab.progress)) * 100) : 0;
+            const statusLabel = mapStrategicStatusLabel(tab.status);
+            const statusColor = mapStrategicStatusColor(tab.status);
+            return (
+              <button
+                key={tab.key}
+                ref={(node) => {
+                  districtTabRefs.current[index] = node;
+                }}
+                role="tab"
+                aria-selected={isSelected}
+                aria-controls={backlogListRegionId}
+                tabIndex={isSelected ? 0 : -1}
+                aria-label={
+                  hasMetrics
+                    ? `${tab.name}. ${statusLabel}. ${tab.issues} issues. ${progressPercent}% complete.`
+                    : `${tab.name}. ${tab.issues} issues.`
+                }
+                data-testid={`district-tab-${tab.districtId}`}
+                data-district-selected={isSelected ? 'true' : 'false'}
+                data-district-progress-source={tab.progressSource ?? undefined}
+                data-district-status={tab.status ?? undefined}
+                data-district-progress={hasMetrics ? progressPercent : undefined}
+                onClick={() => {
+                  if (tab.projectId === 'all') {
+                    setSelectedDistrict('all');
+                    return;
+                  }
+                  setSelectedDistrict((current) => (current === tab.projectId ? 'all' : tab.projectId));
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    if (selectedDistrict !== 'all') {
+                      event.preventDefault();
+                      setSelectedDistrict('all');
+                    }
+                    return;
+                  }
+                  if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home' && event.key !== 'End') {
+                    return;
+                  }
+                  event.preventDefault();
+                  const count = districtTabs.length;
+                  let next = index;
+                  if (event.key === 'ArrowRight') next = (index + 1) % count;
+                  if (event.key === 'ArrowLeft') next = (index - 1 + count) % count;
+                  if (event.key === 'Home') next = 0;
+                  if (event.key === 'End') next = count - 1;
+                  districtTabRefs.current[next]?.focus();
+                }}
+                style={{
+                  minWidth: hasMetrics ? 126 : 108,
+                  textAlign: 'left',
+                  borderRadius: 8,
+                  border: isSelected ? '1px solid rgba(59,130,246,0.8)' : '1px solid rgba(255,255,255,0.14)',
+                  background: isSelected ? 'rgba(37,99,235,0.2)' : 'rgba(255,255,255,0.03)',
+                  color: '#e2e8f0',
+                  padding: hasMetrics ? '8px 9px' : '7px 9px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  flexShrink: 0,
+                }}
+              >
+                <span style={{ fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap' }}>{tab.name}</span>
+                <span style={{ fontSize: 10, color: '#9ca3af' }}>{tab.issues} issues</span>
+                {hasMetrics && (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                      <span
+                        style={{
+                          fontSize: 9,
+                          color: statusColor,
+                          border: `1px solid ${statusColor}66`,
+                          borderRadius: 999,
+                          padding: '1px 6px',
+                          whiteSpace: 'nowrap',
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.5,
+                          fontWeight: 700,
+                        }}
+                      >
+                        {statusLabel}
+                      </span>
+                      {tab.issueBreakdown && (
+                        <span
+                          style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'nowrap' }}
+                          data-district-issue-breakdown={`${tab.issueBreakdown.todo}/${tab.issueBreakdown.in_progress}/${tab.issueBreakdown.done}`}
+                        >
+                          T{tab.issueBreakdown.todo} I{tab.issueBreakdown.in_progress} D{tab.issueBreakdown.done}
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        width: '100%',
+                        height: 4,
+                        borderRadius: 999,
+                        background: 'rgba(255,255,255,0.12)',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          width: `${progressPercent}%`,
+                          height: '100%',
+                          background: '#22c55e',
+                        }}
+                      />
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: 10, color: '#cbd5e1' }}>{progressPercent}%</span>
+                      <span
+                        style={{
+                          fontSize: 9,
+                          color: '#93c5fd',
+                          border: '1px solid rgba(147,197,253,0.35)',
+                          borderRadius: 999,
+                          padding: '1px 5px',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {mapStrategicProgressSourceLabel(tab.progressSource ?? 'issues_fallback')}
+                      </span>
+                    </div>
+                  </>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {sortedProjects.length === 0 && (
+          <div style={{ fontSize: 10, color: '#9ca3af' }}>{STRATEGIC_COPY.emptyProjects}</div>
+        )}
+        {sortedProjects.length > 0 && (
+          <div style={{ fontSize: 9, color: '#64748b' }}>{STRATEGIC_COPY.keyboardHint}</div>
+        )}
+      </div>
+
       {/* Issues list */}
-      <div style={{ overflowY: 'auto', flex: 1 }}>
+      <div
+        style={{ overflowY: 'auto', flex: 1 }}
+        id={backlogListRegionId}
+        data-backlog-filter-project-id={selectedDistrict}
+        data-backlog-visible-count={visibleBacklog.length}
+      >
+        {selectedDistrict !== 'all' && (
+          <div
+            style={{ padding: '7px 12px', fontSize: 10, color: '#93c5fd', borderBottom: '1px solid rgba(255,255,255,0.05)' }}
+            aria-live="polite"
+          >
+            {STRATEGIC_COPY.filterSummary}: {selectedDistrictLabel} • Showing {visibleBacklog.length} of {backlog.length} issues
+          </div>
+        )}
         {(['in_progress', 'todo', 'blocked', 'done'] as const).map(status => {
           const items = grouped[status];
           if (items.length === 0) return null;
@@ -429,7 +717,7 @@ export default function BacklogPanel() {
                   background: 'rgba(255,255,255,0.02)',
                 }}
               >
-                {STATUS_ICONS[status]} {status.replace('_', ' ')} ({items.length})
+                {STATUS_ICONS[status]} {mapBacklogGroupLabel(status)} ({items.length})
               </div>
               {items.map(item => (
                 <IssueCard key={item.id} item={item} />
@@ -437,6 +725,11 @@ export default function BacklogPanel() {
             </div>
           );
         })}
+        {selectedDistrict !== 'all' && visibleBacklog.length === 0 && (
+          <div style={{ padding: '10px 12px', fontSize: 11, color: '#9ca3af' }}>
+            {STRATEGIC_COPY.emptyFiltered}
+          </div>
+        )}
       </div>
 
       {/* Footer */}

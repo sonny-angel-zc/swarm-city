@@ -21,6 +21,7 @@ export default defineConfig({
   reporter: 'list',
   use: {
     baseURL: smokeBaseUrl,
+    headless: true,
     actionTimeout: isCI ? 15_000 : 0,
     navigationTimeout: isCI ? 30_000 : 0,
     trace: isCI ? 'retain-on-failure' : 'off',

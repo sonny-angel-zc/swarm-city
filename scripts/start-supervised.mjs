@@ -16,6 +16,8 @@ let child = null;
 let stopping = false;
 let unhealthyCount = 0;
 let restartCount = 0;
+let restartTimer = null;
+let suppressExitRestart = false;
 
 function ts() {
   return new Date().toISOString();
@@ -30,10 +32,11 @@ function ensureRuntimeDir() {
 }
 
 function clearNextCache() {
-  const nextDir = path.join(repoRoot, '.next');
+  const nextDist = process.env.NEXT_DIST_DIR || '.next-dev-3000';
+  const nextDir = path.join(repoRoot, nextDist);
   if (existsSync(nextDir)) {
     rmSync(nextDir, { recursive: true, force: true });
-    log('cleared .next cache');
+    log(`cleared ${nextDist} cache`);
   }
 }
 
@@ -49,6 +52,10 @@ function consumeRestartSignal() {
 }
 
 function spawnDevServer() {
+  if (child && !child.killed) {
+    log('dev server already running; skipping spawn');
+    return;
+  }
   clearNextCache();
   ensureRuntimeDir();
   log('starting Next.js dev server');
@@ -56,13 +63,21 @@ function spawnDevServer() {
   child = spawn('npm', ['run', 'dev'], {
     cwd: repoRoot,
     stdio: 'inherit',
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      NEXT_DISABLE_WEBPACK_CACHE: process.env.NEXT_DISABLE_WEBPACK_CACHE ?? '1',
+      NEXT_DIST_DIR: process.env.NEXT_DIST_DIR ?? '.next-dev-3000',
+    },
   });
 
   child.on('exit', (code, signal) => {
     if (stopping) return;
+    const expectedExit = suppressExitRestart;
+    child = null;
     log(`dev server exited (code=${code ?? 'null'}, signal=${signal ?? 'null'})`);
-    scheduleRestart('process exit');
+    if (!expectedExit) {
+      scheduleRestart('process exit');
+    }
   });
 }
 
@@ -72,11 +87,19 @@ function terminateChild() {
 }
 
 function scheduleRestart(reason) {
+  if (stopping) return;
+  if (restartTimer) {
+    log(`restart already scheduled; ignoring additional trigger (${reason})`);
+    return;
+  }
   restartCount += 1;
   unhealthyCount = 0;
   log(`restarting dev server (#${restartCount}) due to: ${reason}`);
+  suppressExitRestart = true;
   terminateChild();
-  setTimeout(() => {
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    suppressExitRestart = false;
     if (stopping) return;
     spawnDevServer();
   }, 600);

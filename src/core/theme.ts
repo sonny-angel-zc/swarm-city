@@ -75,3 +75,37 @@ export function rootThemeClass(theme: DashboardTheme): string {
 export function rootThemeDataset(theme: DashboardTheme): DashboardTheme {
   return theme;
 }
+
+export type ThemeToggleUiState = {
+  currentTheme: DashboardTheme;
+  nextTheme: DashboardTheme;
+  isChecked: boolean;
+  ariaLabel: string;
+  title: string;
+  visibleLabel: string;
+  icon: string;
+};
+
+export function resolveThemeToggleUiState(theme: DashboardTheme): ThemeToggleUiState {
+  if (theme === 'dark') {
+    return {
+      currentTheme: 'dark',
+      nextTheme: 'light',
+      isChecked: true,
+      ariaLabel: 'Switch to light mode',
+      title: 'Dark mode enabled. Switch to light mode.',
+      visibleLabel: 'Dark mode',
+      icon: '🌙',
+    };
+  }
+
+  return {
+    currentTheme: 'light',
+    nextTheme: 'dark',
+    isChecked: false,
+    ariaLabel: 'Switch to dark mode',
+    title: 'Light mode enabled. Switch to dark mode.',
+    visibleLabel: 'Light mode',
+    icon: '☀️',
+  };
+}

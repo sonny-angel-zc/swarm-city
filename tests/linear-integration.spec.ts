@@ -11,6 +11,7 @@ type MockIssue = {
   updatedAt: string;
   createdAt: string;
   state: { name: string; type: string };
+  project?: { id: string; name: string } | null;
   assignee: { name: string } | null;
   labels: { nodes: Array<{ name: string; color: string }> };
 };
@@ -29,6 +30,7 @@ test('linear integration flow: sync, create, and status update', async ({ page }
       updatedAt: now,
       createdAt: now,
       state: { name: 'Backlog', type: 'backlog' },
+      project: { id: 'project-1', name: 'Mobility Upgrade' },
       assignee: { name: 'Sonny' },
       labels: { nodes: [] },
     },
@@ -92,7 +94,31 @@ test('linear integration flow: sync, create, and status update', async ({ page }
               issues: {
                 nodes: issues,
               },
+              projects: {
+                nodes: [],
+              },
             },
+          },
+          contracts: {
+            projects: [
+              {
+                id: 'project-1',
+                name: 'Mobility Upgrade',
+                description: 'Upgrade mobility and transit systems.',
+                progress: 0.6,
+                state: 'In Progress',
+                issues: 3,
+                issueBreakdown: { todo: 1, in_progress: 1, done: 1 },
+                districtId: 'mobility-upgrade',
+                status: 'in_progress',
+                progressSource: 'linear',
+                totalIssues: 3,
+                doneIssues: 1,
+                icon: null,
+                color: null,
+                isUnassigned: false,
+              },
+            ],
           },
         }),
       });
@@ -194,6 +220,15 @@ test('linear integration flow: sync, create, and status update', async ({ page }
   await expect(page.getByText('Linear Backlog')).toBeVisible();
   await expect(page.getByText('Initial linear issue')).toBeVisible();
   await expect(page.getByText('1 issues')).toBeVisible();
+  const strategicDistricts = page.getByTestId('strategic-districts');
+  const mobilityTab = page.getByTestId('district-tab-mobility-upgrade');
+  await expect(strategicDistricts).toBeVisible();
+  await expect(mobilityTab).toContainText('In Progress');
+  await expect(mobilityTab).toContainText('T1 I1 D1');
+  await expect(mobilityTab).toContainText('Linear-estimated');
+  await expect(mobilityTab).toHaveAttribute('data-district-status', 'in_progress');
+  await expect(mobilityTab).toHaveAttribute('data-district-progress-source', 'linear');
+  await expect(mobilityTab).toHaveAttribute('data-district-progress', '60');
 
   const createdTitle = `Linear test issue ${Date.now()}`;
   await page.getByRole('button', { name: '+ New' }).click();
@@ -202,6 +237,10 @@ test('linear integration flow: sync, create, and status update', async ({ page }
 
   await expect(page.getByText(createdTitle)).toBeVisible();
   await expect(page.getByText('2 issues')).toBeVisible();
+  await mobilityTab.click();
+  await expect(page.locator('[data-backlog-filter-project-id]')).toHaveAttribute('data-backlog-filter-project-id', 'project-1');
+  await expect(page.getByText('Queue focus: Mobility Upgrade • Showing 1 of 2 issues')).toBeVisible();
+  await expect(page.getByText(createdTitle)).toHaveCount(0);
 
   await page.locator('button[title*="click to cycle"]').first().click();
   await expect.poll(() => updateStatusCalls).toBe(1);

@@ -7,9 +7,9 @@ import {
   THEME_STORAGE_KEY,
   type DashboardTheme,
   resolveInitialDashboardTheme,
+  resolveThemeToggleUiState,
   rootThemeClass,
   rootThemeDataset,
-  toggleDashboardTheme,
 } from '@/core/theme';
 import ProviderHealth from './ProviderHealth';
 
@@ -33,7 +33,7 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
   const setAutonomousEnabled = useSwarmStore(s => s.setAutonomousEnabled);
   const modelPreset = useSwarmStore(s => s.modelPreset);
   const setModelPreset = useSwarmStore(s => s.setModelPreset);
-  const isDarkTheme = theme === 'dark';
+  const themeToggleUiState = resolveThemeToggleUiState(theme);
 
   const applyTheme = useCallback((nextTheme: DashboardTheme, persist: boolean) => {
     const root = document.documentElement;
@@ -80,7 +80,10 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
   };
 
   return (
-    <div className="h-14 bg-[var(--bg-panel)] border-b border-[var(--border-subtle)] text-[var(--text-primary)] flex items-center px-3 md:px-4 gap-2 md:gap-4 z-10">
+    <div
+      data-testid="dashboard-topbar"
+      className="h-14 bg-[var(--bg-panel)] border-b border-[var(--border-subtle)] text-[var(--text-primary)] flex items-center px-3 md:px-4 gap-2 md:gap-4 z-10"
+    >
       <div className="flex items-center gap-2">
         <span className="text-lg">🏙️</span>
         <span className="font-bold text-sm tracking-wide hidden sm:inline">SWARM CITY</span>
@@ -120,21 +123,29 @@ export default function TopBar({ onToggleSidebar }: { onToggleSidebar?: () => vo
       <button
         type="button"
         data-testid="theme-toggle-switch"
-        onClick={() => applyTheme(toggleDashboardTheme(theme), true)}
+        data-theme-current={themeToggleUiState.currentTheme}
+        data-theme-target={themeToggleUiState.nextTheme}
+        data-theme-switch-checked={String(themeToggleUiState.isChecked)}
+        onClick={() => applyTheme(themeToggleUiState.nextTheme, true)}
         role="switch"
-        aria-checked={isDarkTheme}
-        aria-label={isDarkTheme ? 'Switch to light mode' : 'Switch to dark mode'}
-        title={isDarkTheme ? 'Dark mode enabled. Switch to light mode.' : 'Light mode enabled. Switch to dark mode.'}
+        aria-checked={themeToggleUiState.isChecked}
+        aria-label={themeToggleUiState.ariaLabel}
+        title={themeToggleUiState.title}
         className="inline-flex items-center gap-2 rounded-full border border-[var(--theme-toggle-border)] bg-[var(--theme-toggle-bg)] px-2.5 py-1.5 text-[11px] font-semibold text-[var(--theme-toggle-text)] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--bg-canvas)]"
       >
         <span
+          data-testid="theme-toggle-icon"
           aria-hidden="true"
           className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[var(--theme-toggle-icon-bg)] text-[12px] text-[var(--theme-toggle-icon-text)]"
         >
-          {isDarkTheme ? '🌙' : '☀️'}
+          {themeToggleUiState.icon}
         </span>
-        <span className="hidden sm:inline">{isDarkTheme ? 'Dark' : 'Light'}</span>
-        <span className="h-1.5 w-1.5 rounded-full bg-[var(--theme-toggle-indicator)]" aria-hidden="true" />
+        <span data-testid="theme-toggle-label" className="hidden sm:inline">{themeToggleUiState.visibleLabel}</span>
+        <span
+          data-testid="theme-toggle-indicator"
+          className="h-1.5 w-1.5 rounded-full bg-[var(--theme-toggle-indicator)]"
+          aria-hidden="true"
+        />
       </button>
       <button
         onClick={async () => {

@@ -1,0 +1,99 @@
+name: Theme Regression Guardrails
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: theme-regression-guardrails-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  theme-regression-guardrails:
+    name: theme-regression-guardrails
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Build app
+        run: npm run build
+
+      - name: Prepare report directories
+        run: mkdir -p test-results/theme-regression playwright-report/theme-regression
+
+      - name: Run theme regression guardrails
+        run: npm run test:theme:guardrails:ci -- --reporter=github,line,junit,html --output=test-results/theme-regression
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_DIR: test-results/theme-regression
+          PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit.xml
+          PLAYWRIGHT_HTML_REPORT: playwright-report/theme-regression
+
+      - name: Add failure triage summary
+        if: failure()
+        run: |
+          {
+            echo "## Theme Regression Guardrail Failure"
+            echo ""
+            echo "- Reproduce locally: \`npm run test:theme:guardrails:ci\`"
+            echo "- JUnit report: \`test-results/theme-regression/junit.xml\`"
+            echo "- Playwright HTML report: \`playwright-report/theme-regression\`"
+            echo ""
+            echo "### First failing test cases"
+            if [ -f test-results/theme-regression/junit.xml ]; then
+              awk '
+                /<testcase / { testcase=$0 }
+                /<failure / {
+                  count += 1
+                  if (count <= 5) {
+                    suite = testcase
+                    gsub(/^.*classname="/, "", suite)
+                    gsub(/".*$/, "", suite)
+                    name = testcase
+                    gsub(/^.*name="/, "", name)
+                    gsub(/".*$/, "", name)
+                    printf("- %s :: %s\n", suite, name)
+                  }
+                }
+                END {
+                  if (count == 0) {
+                    print "- No <failure> nodes found in junit.xml (check job log output)."
+                  }
+                }
+              ' test-results/theme-regression/junit.xml
+            else
+              echo "- junit.xml not found; inspect step logs and uploaded artifacts."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload guardrail artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-theme-regression-artifacts
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            playwright-report/theme-regression
+            test-results/theme-regression

@@ -1,12 +1,30 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSwarmStore } from '@/core/store';
+
+type OpenAIUsageSnapshot = {
+  available: boolean;
+  source?: string;
+  windowMinutes?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  requests?: number;
+  totalCostUsd?: number;
+  burnRateUsdPerMin?: number;
+  reason?: string;
+  message?: string;
+};
 
 export default function Treasury() {
   const economy = useSwarmStore(s => s.economy);
   const telemetry = useSwarmStore(s => s.telemetry);
+  const rateLimiter = useSwarmStore(s => s.rateLimiter);
+  const activeModel = useSwarmStore(s => s.activeModel);
+  const providerHealth = useSwarmStore(s => s.providerHealth);
   const setBudgetPanelOpen = useSwarmStore(s => s.setBudgetPanelOpen);
+  const [openAIUsage, setOpenAIUsage] = useState<OpenAIUsageSnapshot | null>(null);
 
   const remaining = Math.max(0, economy.totalBudget - economy.spent);
   const spentPct = economy.totalBudget > 0 ? economy.spent / economy.totalBudget : 0;
@@ -45,9 +63,69 @@ export default function Treasury() {
     ? Math.max(...economy.triggeredBudgetAlerts)
     : null;
 
+  useEffect(() => {
+    let alive = true;
+    const fetchUsage = async () => {
+      try {
+        const res = await fetch('/api/usage/openai?windowMin=15', { cache: 'no-store' });
+        const json = await res.json() as OpenAIUsageSnapshot;
+        if (alive) setOpenAIUsage(json);
+      } catch (err) {
+        if (alive) {
+          setOpenAIUsage({
+            available: false,
+            reason: 'network_error',
+            message: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    };
+    void fetchUsage();
+    const timer = window.setInterval(() => {
+      void fetchUsage();
+    }, 15000);
+
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const limiterSnapshot = useMemo(() => rateLimiter.getSnapshot(), [rateLimiter, telemetry.events.length]);
+  const activeLimiterEntry = useMemo(() => {
+    if (!activeModel) return null;
+    const key = `${activeModel.provider}:${activeModel.model}`;
+    return limiterSnapshot.find(entry => entry.key === key) ?? null;
+  }, [activeModel, limiterSnapshot]);
+  const limitedEntries = useMemo(
+    () => limiterSnapshot.filter(entry => entry.isLimited),
+    [limiterSnapshot],
+  );
+  const highestPressureEntry = useMemo(() => {
+    if (limiterSnapshot.length === 0) return null;
+    return [...limiterSnapshot].sort((a, b) => {
+      const ratioA = a.maxRequests > 0 ? a.requestCount / a.maxRequests : 0;
+      const ratioB = b.maxRequests > 0 ? b.requestCount / b.maxRequests : 0;
+      return ratioB - ratioA;
+    })[0] ?? null;
+  }, [limiterSnapshot]);
+  const openAIWindowCost = openAIUsage?.available ? (openAIUsage.totalCostUsd ?? 0) : null;
+  const openAIWindowBurn = openAIUsage?.available ? (openAIUsage.burnRateUsdPerMin ?? 0) : null;
+  const openAIWindowTokens = openAIUsage?.available ? (openAIUsage.totalTokens ?? 0) : null;
+  const openAIWindowLabel = `${openAIUsage?.windowMinutes ?? 15}m`;
+  const activeProviderStatus = activeModel ? providerHealth[activeModel.provider]?.status ?? 'healthy' : null;
+  const limiterStatusColor =
+    limitedEntries.length > 0 ? 'text-red-300' :
+    activeProviderStatus === 'degraded' || activeProviderStatus === 'limited' ? 'text-yellow-300' :
+    'text-emerald-300';
+  const retrySec = activeLimiterEntry?.cooldownUntil
+    ? Math.max(0, Math.ceil((activeLimiterEntry.cooldownUntil - Date.now()) / 1000))
+    : 0;
+  const cardText = 'text-[10px] text-white/60';
+
   return (
     <div
-      className={`absolute top-3 left-3 z-20 ${bgColor} backdrop-blur-sm border ${borderColor} rounded-lg px-3 py-2 cursor-pointer hover:bg-white/5 transition-colors select-none min-w-56`}
+      className={`absolute top-3 left-3 z-20 ${bgColor} backdrop-blur-sm border ${borderColor} rounded-xl px-3 py-2 cursor-pointer hover:bg-white/5 transition-colors select-none min-w-72 shadow-lg`}
       onClick={() => setBudgetPanelOpen(true)}
     >
       <div className="flex items-center gap-2">
@@ -64,12 +142,12 @@ export default function Treasury() {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-1.5">
-            <span className="text-sm font-mono font-semibold" style={{ color }}>
+            <span className="text-2xl leading-none font-mono font-semibold" style={{ color }}>
               {remaining.toLocaleString()}
             </span>
-            <span className="text-[9px] text-white/30">tokens</span>
+            <span className="text-sm text-white/40">tokens</span>
           </div>
-          <div className="text-[9px] text-white/35 flex items-center gap-1.5">
+          <div className="text-xs text-white/45 flex items-center gap-1.5 mt-0.5">
             <span>{spendRate > 0 ? `${spendRate.toLocaleString()}/min` : 'idle'}</span>
             <span>•</span>
             <span>{runwayMin === null ? '∞ runway' : `${runwayMin.toFixed(1)}m runway`}</span>
@@ -84,17 +162,67 @@ export default function Treasury() {
         />
       </div>
 
-      <div className="mt-2 flex items-center justify-between text-[9px] text-white/35">
-        <span>burn ${telemetry.burnRatePerMinUsd.toFixed(4)}/min</span>
+      <div className={`mt-2 flex items-center justify-between ${cardText}`}>
+        <span>internal burn ${telemetry.burnRatePerMinUsd.toFixed(4)}/min</span>
         <span>total ${telemetry.totalCostUsd.toFixed(4)}</span>
       </div>
-      <div className="mt-0.5 flex items-center justify-between text-[9px] text-white/35">
-        <span>burst ${recentCost15s.toFixed(4)}/15s</span>
+      <div className={`mt-0.5 flex items-center justify-between ${cardText}`}>
+        <span>internal burst ${recentCost15s.toFixed(4)}/15s</span>
         <span>{telemetry.events.length} cost events</span>
       </div>
+      <div className={`mt-1 flex items-center justify-between ${cardText}`}>
+        {openAIWindowCost === null ? (
+          <span>openai {openAIWindowLabel}: unavailable</span>
+        ) : (
+          <span>openai {openAIWindowLabel}: ${openAIWindowCost.toFixed(4)}</span>
+        )}
+        {openAIWindowBurn === null ? (
+          <span className="text-yellow-200/80">no external burn</span>
+        ) : (
+          <span>${openAIWindowBurn.toFixed(4)}/min</span>
+        )}
+      </div>
+      <div className={`mt-0.5 flex items-center justify-between ${cardText}`}>
+        <span>openai tokens ({openAIWindowLabel})</span>
+        <span>{openAIWindowTokens === null ? 'n/a' : openAIWindowTokens.toLocaleString()}</span>
+      </div>
+      <div className={`mt-1 flex items-center justify-between ${cardText}`}>
+        <span>internal limiter</span>
+        <span className={limiterStatusColor}>
+          {limitedEntries.length > 0
+            ? `${limitedEntries.length} limited`
+            : activeProviderStatus === 'degraded'
+              ? 'degraded'
+              : 'healthy'}
+        </span>
+      </div>
+      {activeModel && (
+        <div className={`mt-0.5 flex items-center justify-between ${cardText}`}>
+          <span className="truncate max-w-[220px]">active {activeModel.model}</span>
+          {activeLimiterEntry ? (
+            <span>
+              {activeLimiterEntry.remaining}/{activeLimiterEntry.maxRequests}
+              {retrySec > 0 ? ` • ${retrySec}s` : ''}
+            </span>
+          ) : (
+            <span>no calls yet</span>
+          )}
+        </div>
+      )}
+      {highestPressureEntry && (
+        <div className={`mt-0.5 flex items-center justify-between ${cardText}`}>
+          <span className="truncate max-w-[220px]">peak window {highestPressureEntry.key}</span>
+          <span>{highestPressureEntry.requestCount}/{highestPressureEntry.maxRequests}</span>
+        </div>
+      )}
+      {openAIUsage && !openAIUsage.available && (
+        <div className="mt-1 text-[10px] text-yellow-200/80 truncate">
+          OpenAI usage sync: {openAIUsage.reason ?? 'not available'}
+        </div>
+      )}
 
       {maxTriggeredThreshold !== null && (
-        <div className="mt-1 text-[9px] text-red-300 bg-red-500/10 border border-red-500/25 rounded px-1.5 py-1">
+        <div className="mt-1 text-[10px] text-red-300 bg-red-500/10 border border-red-500/25 rounded px-1.5 py-1">
           alert: {Math.round(maxTriggeredThreshold * 100)}% budget threshold reached
         </div>
       )}
@@ -104,7 +232,7 @@ export default function Treasury() {
           {providerRows.map(p => (
             <span
               key={p.provider}
-              className="text-[9px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-white/60"
+              className="text-[10px] px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-white/60"
             >
               {p.provider}: ${p.costUsd.toFixed(3)}
             </span>
@@ -113,13 +241,13 @@ export default function Treasury() {
       )}
 
       {hottestModel && (
-        <div className="mt-1 text-[9px] text-white/40 truncate">
+        <div className="mt-1 text-[10px] text-white/40 truncate">
           model {hottestModel.model} ({hottestModel.events} calls)
         </div>
       )}
 
       {latestTelemetry && (
-        <div className="mt-0.5 text-[9px] text-white/40 truncate">
+        <div className="mt-0.5 text-[10px] text-white/40 truncate">
           latest ${latestTelemetry.estimatedCostUsd.toFixed(4)} on {latestTelemetry.model}
         </div>
       )}

@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3000",
-    "dev:turbopack": "next dev --turbopack -p 3000",
+    "dev": "NEXT_DISABLE_WEBPACK_CACHE=1 NEXT_DIST_DIR=.next-dev-3000 next dev -p 3000",
+    "dev:turbopack": "NEXT_DIST_DIR=.next-dev-3000 next dev --turbopack -p 3000",
     "start:supervised": "node scripts/start-supervised.mjs",
     "build": "NODE_ENV=production npm run validate:docs-registry && npm run validate:next-router-roots && NODE_ENV=production next build",
     "typecheck": "node scripts/typecheck.mjs",
@@ -13,9 +13,12 @@
     "validate:docs-registry": "node scripts/validate-docs-registry.mjs",
     "validate:next-router-roots": "node scripts/validate-next-router-roots.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:ci": "CI=1 playwright test --workers=1",
     "test:smoke:preflight": "node scripts/smoke-preflight.mjs",
     "test:smoke": "npm run test:smoke:preflight && playwright test tests/smoke.spec.ts",
-    "test:smoke:ci": "npm run test:smoke:preflight && CI=1 playwright test tests/smoke.spec.ts --workers=1 --retries=0"
+    "test:smoke:ci": "npm run test:smoke:preflight && CI=1 playwright test tests/smoke.spec.ts --workers=1 --retries=0",
+    "test:theme:guardrails": "playwright test tests/theme-regression.spec.ts --project=chromium",
+    "test:theme:guardrails:ci": "CI=1 playwright test tests/theme-regression.spec.ts --project=chromium --workers=1 --retries=0"
   },
   "dependencies": {
     "next": "^15.3.3",

@@ -8,6 +8,26 @@ import {
 } from '@/core/types';
 import { gridToScreen, drawIsoBox } from '@/core/isometric';
 import { getRoleSprite, getSprite, preloadAllSprites, DECO_SPRITES, NATURE_SPRITES } from '@/core/spriteLoader';
+import {
+  BUILDING_FOOTPRINT_TILES,
+  MAIN_ROAD_TILES,
+  PARK_CORNER_TILES,
+  PLAZA_TILES,
+  SECONDARY_CONNECTOR_TILES,
+  ROAD_INTERSECTION_TILES,
+  ROAD_TILES,
+  SIDEWALK_BORDER_TILES,
+  WATER_TILES,
+  type TileKey,
+} from '@/core/cityLayout';
+import {
+  CITY_PERFORMANCE_CONSTRAINTS,
+  CITY_ROAD_TILE_LANGUAGE,
+  CITY_TERRAIN_TOKENS,
+  resolveCityThemeMode,
+  resolveTileOccupant,
+} from '@/core/cityVisualSpec';
+import { CITY_CANVAS_RENDER_PIPELINE_VERSION } from '@/core/cityCanvasRenderPipeline';
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
@@ -32,31 +52,6 @@ function getAmbientColor(hour: number): { r: number; g: number; b: number } {
   }
   return { r: 10, g: 15, b: 40 };
 }
-
-// ─── Road layout ─────────────────────────────────────────────────────────────
-
-// The 4 center tiles form the fountain plaza — excluded from road network
-const PLAZA_TILES = new Set(['7,7', '7,8', '8,7', '8,8']);
-
-const ROAD_TILES = new Set<string>();
-for (let i = 0; i < GRID_SIZE; i++) {
-  ROAD_TILES.add(`7,${i}`);
-  ROAD_TILES.add(`8,${i}`);
-  ROAD_TILES.add(`${i},7`);
-  ROAD_TILES.add(`${i},8`);
-}
-for (let i = 2; i < 13; i++) {
-  ROAD_TILES.add(`${i},3`);
-  ROAD_TILES.add(`${i},4`);
-  ROAD_TILES.add(`${i},11`);
-  ROAD_TILES.add(`${i},12`);
-  ROAD_TILES.add(`3,${i}`);
-  ROAD_TILES.add(`4,${i}`);
-  ROAD_TILES.add(`11,${i}`);
-  ROAD_TILES.add(`12,${i}`);
-}
-// Remove plaza tiles from roads
-for (const key of PLAZA_TILES) ROAD_TILES.delete(key);
 
 // ─── Power grid edges (building-to-building along roads) ─────────────────────
 
@@ -95,6 +90,8 @@ const DECO_BUILDINGS: DecoBuilding[] = [
   { gx: 10, gy: 10, h: 11, color: '#151d30', sprite: NATURE_SPRITES[2], scale: 0.5 },
 ];
 
+const SIDEWALK_TILES = new Set<TileKey>([...SIDEWALK_BORDER_TILES, ...PLAZA_TILES]);
+
 // Fill empty lots so the scene reads as a denser city instead of isolated landmarks.
 const AGENT_TILES = new Set(BUILDING_CONFIGS.map(cfg => `${cfg.gridX},${cfg.gridY}`));
 const STATIC_DECO_TILES = new Set(DECO_BUILDINGS.map(d => `${d.gx},${d.gy}`));
@@ -102,7 +99,7 @@ const DISTRICT_BUILDINGS: DecoBuilding[] = [];
 for (let gx = 0; gx < GRID_SIZE; gx++) {
   for (let gy = 0; gy < GRID_SIZE; gy++) {
     const key = `${gx},${gy}`;
-    if (ROAD_TILES.has(key) || PLAZA_TILES.has(key) || AGENT_TILES.has(key) || STATIC_DECO_TILES.has(key)) continue;
+    if (ROAD_TILES.has(key as TileKey) || PLAZA_TILES.has(key as TileKey) || AGENT_TILES.has(key) || STATIC_DECO_TILES.has(key)) continue;
 
     const seed = gx * 37 + gy * 53;
     const nearCore = gx >= 3 && gx <= 12 && gy >= 3 && gy <= 12;
@@ -128,6 +125,10 @@ for (let gx = 0; gx < GRID_SIZE; gx++) {
 }
 const ALL_DECO_BUILDINGS = [...DECO_BUILDINGS, ...DISTRICT_BUILDINGS]
   .sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy));
+
+function tileKeyOf(x: number, y: number): TileKey {
+  return `${x},${y}`;
+}
 
 // ─── Fountain drawing ─────────────────────────────────────────────────────────
 
@@ -475,6 +476,7 @@ export default function CityCanvas() {
   const setCameraPos = useSwarmStore(s => s.setCameraPos);
   const panCamera = useSwarmStore(s => s.panCamera);
   const setZoom = useSwarmStore(s => s.setZoom);
+  const overlayMode = useSwarmStore(s => s.overlayMode);
 
   // Track coins tossed into the fountain
   const coinCountRef = useRef(0);
@@ -815,7 +817,7 @@ export default function CityCanvas() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const dt = Math.min((timestamp - lastTime.current) / 1000, 0.1);
+    const dt = Math.min((timestamp - lastTime.current) / 1000, CITY_PERFORMANCE_CONSTRAINTS.frameBudgetMs / 1000);
     lastTime.current = timestamp;
     tick(dt);
 
@@ -830,6 +832,8 @@ export default function CityCanvas() {
     const hourFrac = now.getHours() + now.getMinutes() / 60;
     const darkness = getDarkness(hourFrac);
     const ambient = getAmbientColor(hourFrac);
+    const cityTheme = resolveCityThemeMode(document.documentElement.dataset.theme);
+    const terrain = CITY_TERRAIN_TOKENS[cityTheme];
 
     // Detect context resets for reboot flash
     for (const role of Object.keys(state.agents) as AgentRole[]) {
@@ -905,9 +909,17 @@ export default function CityCanvas() {
     for (let gx = 0; gx < GRID_SIZE; gx++) {
       for (let gy = 0; gy < GRID_SIZE; gy++) {
         const pos = gridToScreen(gx, gy);
-        const tileKey = `${gx},${gy}`;
+        const tileKey = `${gx},${gy}` as TileKey;
         const isPlaza = PLAZA_TILES.has(tileKey);
-        const isRoad = ROAD_TILES.has(tileKey);
+        const occupant = resolveTileOccupant(tileKey, {
+          buildingTiles: BUILDING_FOOTPRINT_TILES,
+          roadTiles: ROAD_TILES,
+          sidewalkTiles: SIDEWALK_TILES,
+          waterTiles: WATER_TILES,
+          parkTiles: PARK_CORNER_TILES,
+        });
+        const seed = (gx * 97 + gy * 131) % 13;
+        const alpha = 0.08 + (seed % 5) * 0.01;
 
         ctx.beginPath();
         ctx.moveTo(pos.x, pos.y - TILE_HEIGHT / 2);
@@ -916,32 +928,20 @@ export default function CityCanvas() {
         ctx.lineTo(pos.x - TILE_WIDTH / 2, pos.y);
         ctx.closePath();
 
-        if (isPlaza) {
-          // Stone plaza tile — dark slate with cyan tint, distinct from road
-          const sb = Math.round(19 + (1 - darkness) * 8);
-          ctx.fillStyle = `rgb(${sb + 2},${sb + 9},${sb + 22})`;
+        if (occupant === 'road') {
+          ctx.fillStyle = terrain.roadBase;
           ctx.fill();
-          ctx.strokeStyle = 'rgba(80,150,220,0.12)';
-          ctx.lineWidth = 0.6;
-          ctx.stroke();
-        } else if (isRoad) {
-          // Road slightly lighter during day
-          const roadBright = Math.round(21 + (1 - darkness) * 8);
-          ctx.fillStyle = `rgb(${roadBright},${roadBright + 7},${roadBright + 24})`;
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(80,120,180,0.08)';
+          ctx.strokeStyle = terrain.roadEdge;
           ctx.lineWidth = 0.5;
           ctx.stroke();
 
-          // Center line markings
           if (gx === 7 || gx === 8 || gy === 7 || gy === 8) {
             if ((gx + gy) % 2 === 0) {
-              ctx.fillStyle = 'rgba(255,200,60,0.08)';
+              ctx.fillStyle = terrain.roadMarking;
               ctx.fillRect(pos.x - 1, pos.y - 0.5, 2, 1);
             }
           }
 
-          // Street lamp glow at night
           if (darkness > 0.3 && (gx + gy) % 3 === 0) {
             const lampAlpha = (darkness - 0.3) * 0.5;
             const lampGrad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, TILE_WIDTH * 0.6);
@@ -952,13 +952,36 @@ export default function CityCanvas() {
             ctx.ellipse(pos.x, pos.y, TILE_WIDTH * 0.6, TILE_HEIGHT * 0.4, 0, 0, Math.PI * 2);
             ctx.fill();
           }
-        } else {
-          const groundBright = Math.round(11 + (1 - darkness) * 6);
-          ctx.fillStyle = `rgb(${groundBright},${groundBright + 5},${groundBright + 21})`;
+        } else if (occupant === 'sidewalk' || isPlaza) {
+          ctx.fillStyle = terrain.sidewalkBase;
           ctx.fill();
-          ctx.strokeStyle = 'rgba(40,60,100,0.06)';
+          ctx.strokeStyle = terrain.sidewalkEdge;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        } else if (occupant === 'water') {
+          ctx.fillStyle = terrain.waterBase;
+          ctx.fill();
+          ctx.strokeStyle = terrain.waterEdge;
+          ctx.lineWidth = 0.5;
+          ctx.stroke();
+        } else if (occupant === 'park') {
+          ctx.fillStyle = terrain.parkBase;
+          ctx.fill();
+          ctx.strokeStyle = terrain.parkPath;
+          ctx.lineWidth = 0.4;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = terrain.grassBase;
+          ctx.fill();
+          ctx.strokeStyle = terrain.grassEdge;
           ctx.lineWidth = 0.3;
           ctx.stroke();
+          if (seed % 2 === 0) {
+            ctx.beginPath();
+            ctx.ellipse(pos.x, pos.y, TILE_WIDTH * 0.12, TILE_HEIGHT * 0.08, 0, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+            ctx.fill();
+          }
         }
       }
     }
@@ -966,7 +989,7 @@ export default function CityCanvas() {
     // Deco buildings (background filler) - sprites with fallback
     for (const d of ALL_DECO_BUILDINGS) {
       const pos = gridToScreen(d.gx, d.gy);
-      if (!ROAD_TILES.has(`${d.gx},${d.gy}`)) {
+      if (!ROAD_TILES.has(`${d.gx},${d.gy}` as TileKey)) {
         const decoSprite = getSprite(d.sprite);
         if (decoSprite && decoSprite.naturalWidth > 0) {
           const destW = TILE_WIDTH * d.scale;
@@ -1039,7 +1062,7 @@ export default function CityCanvas() {
       ctx.lineTo(vx, vy + 2);
       ctx.lineTo(vx - 3, vy);
       ctx.closePath();
-      ctx.fillStyle = '#fff';
+      ctx.fillStyle = terrain.vehicleHighlight;
       ctx.globalAlpha = 0.4;
       ctx.fill();
       ctx.globalAlpha = 1;
@@ -1297,7 +1320,13 @@ export default function CityCanvas() {
 
   return (
     <canvas
+      id="city-canvas"
       ref={canvasRef}
+      role="img"
+      aria-label="Swarm city isometric canvas"
+      data-testid="city-canvas"
+      data-overlay-mode={overlayMode}
+      data-render-pipeline-version={CITY_CANVAS_RENDER_PIPELINE_VERSION}
       className="w-full h-full cursor-grab active:cursor-grabbing touch-none"
       onClick={handleClick}
       onMouseDown={handleMouseDown}

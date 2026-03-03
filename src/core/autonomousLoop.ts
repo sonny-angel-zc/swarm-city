@@ -221,7 +221,32 @@ function parsePipelineSubtasks(text: string): PipelineSubtask[] {
   const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fence?.[1]?.trim() || text;
   const arrayMatch = candidate.match(/\[[\s\S]*\]/);
-  if (!arrayMatch) return [];
+  if (!arrayMatch) {
+    const objectMatch = candidate.match(/\{[\s\S]*\}/);
+    if (!objectMatch) return [];
+    try {
+      const parsedObject = JSON.parse(objectMatch[0]) as { subtasks?: unknown; tasks?: unknown; items?: unknown };
+      const nested =
+        (Array.isArray(parsedObject.subtasks) && parsedObject.subtasks) ||
+        (Array.isArray(parsedObject.tasks) && parsedObject.tasks) ||
+        (Array.isArray(parsedObject.items) && parsedObject.items) ||
+        [];
+      return nested
+        .map((item) => {
+          const row = item as { title?: unknown; description?: unknown; role?: unknown };
+          return {
+            title: String(row.title ?? '').trim(),
+            description: String(row.description ?? '').trim(),
+            role: row.role,
+          };
+        })
+        .filter((item): item is { title: string; description: string; role: PipelineRole } =>
+          item.title.length > 0 && item.description.length > 0 && isPipelineRole(item.role),
+        );
+    } catch {
+      return [];
+    }
+  }
 
   try {
     const parsed = JSON.parse(arrayMatch[0]) as Array<{ title?: unknown; description?: unknown; role?: unknown }>;
@@ -237,6 +262,37 @@ function parsePipelineSubtasks(text: string): PipelineSubtask[] {
   } catch {
     return [];
   }
+}
+
+function fallbackPipelineSubtasks(issue: LinearIssue): PipelineSubtask[] {
+  const subject = issue.title.trim() || issue.identifier;
+  return [
+    {
+      role: 'researcher',
+      title: `Research constraints for ${issue.identifier}`,
+      description: `Audit existing architecture and constraints for "${subject}". Document actionable implementation guidance.`,
+    },
+    {
+      role: 'designer',
+      title: `Design UX/data contract for ${issue.identifier}`,
+      description: `Define interaction model, copy, and UI/data mapping decisions required for "${subject}".`,
+    },
+    {
+      role: 'engineer',
+      title: `Implement core changes for ${issue.identifier}`,
+      description: `Ship the primary code changes for "${subject}" in the repository.`,
+    },
+    {
+      role: 'qa',
+      title: `Validate behavior for ${issue.identifier}`,
+      description: `Run targeted validation and regression checks for "${subject}", fixing issues found.`,
+    },
+    {
+      role: 'reviewer',
+      title: `Review and harden ${issue.identifier}`,
+      description: `Review diffs for quality, maintainability, and edge cases; apply final hardening.`,
+    },
+  ];
 }
 
 function getRoleSystemPrompt(role: PipelineRole): string {
@@ -346,7 +402,9 @@ async function recoverStuckStartedIssues(issues: LinearIssue[]): Promise<void> {
   });
   if (stuck.length === 0) return;
 
-  if (hasActiveCodexProcess()) {
+  // Only skip recovery when this runtime is actively executing a task.
+  // Codex desktop/CLI background processes may exist and should not block stuck-task repair.
+  if (hasActiveCodexProcess() && runtime().state.currentTask) {
     addEvent(`Skipped stuck-task recovery (${stuck.length} candidate issue(s)); Codex process is active.`);
     return;
   }
@@ -501,12 +559,11 @@ async function tickLoop() {
       return;
     }
 
-    const subtasks = parsePipelineSubtasks(decomposition.text);
+    let subtasks = parsePipelineSubtasks(decomposition.text);
     if (subtasks.length === 0) {
-      addEvent(`City Hall returned invalid decomposition for ${issue.identifier}.`, 'error');
-      setAgentStatus('pm', 'blocked', `Invalid decomposition output for ${issue.identifier}`);
-      await updateIssueStateByType(issue.id, 'unstarted', LINEAR_TEAM_ID);
-      return;
+      const snippet = decomposition.text.replace(/\s+/g, ' ').slice(0, 220);
+      addEvent(`City Hall returned invalid decomposition for ${issue.identifier}; using fallback subtasks. Output: ${snippet}`, 'warning');
+      subtasks = fallbackPipelineSubtasks(issue);
     }
     addEvent(`City Hall decomposed ${issue.identifier} into ${subtasks.length} subtasks.`);
 

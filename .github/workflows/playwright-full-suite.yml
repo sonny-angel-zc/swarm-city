@@ -1,0 +1,168 @@
+name: Playwright Full Suite
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: playwright-full-suite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  playwright-full-suite:
+    name: playwright-full-suite (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - chromium
+          - firefox
+          - webkit
+    env:
+      CI: '1'
+      TZ: 'UTC'
+      NEXT_TELEMETRY_DISABLED: '1'
+      SMOKE_HOST: 'localhost'
+      SMOKE_PORT: '3000'
+      PLAYWRIGHT_SKIP_WEBSERVER: '1'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-ms-playwright-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-ms-playwright-
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps ${{ matrix.project }}
+
+      - name: Build app
+        run: npm run build
+
+      - name: Prepare report directories
+        run: mkdir -p "test-results/playwright-full/${{ matrix.project }}" "playwright-report/playwright-full/${{ matrix.project }}"
+
+      - name: Launch Next.js server
+        run: |
+          npm run start -- -H "$SMOKE_HOST" -p "$SMOKE_PORT" > next-server.log 2>&1 &
+          echo "NEXT_SERVER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for localhost readiness
+        run: |
+          set -euo pipefail
+          base_url="http://${SMOKE_HOST}:${SMOKE_PORT}"
+          echo "Waiting for TCP port and HTTP readiness at ${base_url}"
+          for attempt in $(seq 1 60); do
+            port_ready=0
+            http_ready=0
+
+            if bash -c "exec 3<>/dev/tcp/${SMOKE_HOST}/${SMOKE_PORT}" 2>/dev/null; then
+              port_ready=1
+              exec 3>&-
+              exec 3<&-
+            fi
+
+            if curl --fail --silent --show-error --max-time 2 "$base_url" > /dev/null; then
+              http_ready=1
+            fi
+
+            if [ "$port_ready" -eq 1 ] && [ "$http_ready" -eq 1 ]; then
+              echo "Next.js is ready after ${attempt} checks (tcp=ready, http=ready)."
+              exit 0
+            fi
+
+            echo "Attempt ${attempt}/60: tcp=${port_ready} http=${http_ready}"
+            sleep 2
+          done
+          echo "Next.js did not become ready at ${base_url} within 120 seconds (tcp+http required)."
+          echo "----- next-server.log -----"
+          cat next-server.log
+          exit 1
+
+      - name: Run Playwright full suite
+        run: npm run test:e2e:ci -- --project="${{ matrix.project }}" --reporter=github,line,junit,html --output="test-results/playwright-full/${{ matrix.project }}"
+        env:
+          PLAYWRIGHT_JUNIT_OUTPUT_DIR: test-results/playwright-full/${{ matrix.project }}
+          PLAYWRIGHT_JUNIT_OUTPUT_NAME: junit.xml
+          PLAYWRIGHT_HTML_REPORT: playwright-report/playwright-full/${{ matrix.project }}
+
+      - name: Add failure triage summary
+        if: failure()
+        run: |
+          {
+            echo "## Playwright Full Suite Failure"
+            echo ""
+            echo "- Reproduce locally: \`npm run test:e2e:ci\`"
+            echo "- Download playwright-full-suite artifacts for traces, screenshots, and JUnit output."
+            echo ""
+            echo "### First failing test cases"
+            if [ -f "test-results/playwright-full/${{ matrix.project }}/junit.xml" ]; then
+              awk '
+                /<testcase / { testcase=$0 }
+                /<failure / {
+                  count += 1
+                  if (count <= 5) {
+                    suite = testcase
+                    gsub(/^.*classname="/, "", suite)
+                    gsub(/".*$/, "", suite)
+                    name = testcase
+                    gsub(/^.*name="/, "", name)
+                    gsub(/".*$/, "", name)
+                    printf("- %s :: %s\n", suite, name)
+                  }
+                }
+                END {
+                  if (count == 0) {
+                    print "- No <failure> nodes found in junit.xml (check job log output)."
+                  }
+                }
+              ' "test-results/playwright-full/${{ matrix.project }}/junit.xml"
+            else
+              echo "- junit.xml not found; inspect step logs and uploaded artifacts."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Stop Next.js server
+        if: always()
+        run: |
+          if [ -n "${NEXT_SERVER_PID:-}" ] && kill -0 "${NEXT_SERVER_PID}" 2>/dev/null; then
+            kill "${NEXT_SERVER_PID}"
+            wait "${NEXT_SERVER_PID}" || true
+          fi
+
+      - name: Upload playwright-full-suite artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-full-suite-artifacts-${{ matrix.project }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            playwright-report/playwright-full/${{ matrix.project }}
+            test-results/playwright-full/${{ matrix.project }}
+            next-server.log

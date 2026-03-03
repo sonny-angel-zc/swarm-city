@@ -95,6 +95,26 @@ test('home page smoke test', async ({ page }) => {
   await expect(page.getByText('SWARM CITY')).toBeVisible();
   await expect(page.getByPlaceholder('Enter a task for the swarm to execute...')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Create Task →' }).first()).toBeVisible();
+  await expect(page.getByText('View mode')).toBeVisible();
+  await expect(page.getByRole('tab', { name: /City Life/i })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Transit Grid/i })).toBeVisible();
+  await expect(page.getByRole('tab', { name: /Spend Heatmap/i })).toBeVisible();
+
+  const toggle = page.getByTestId('city-overlay-toggle');
+  const cityCanvas = page.getByTestId('city-canvas');
+  const transitTab = page.getByTestId('city-overlay-mode-power');
+  await expect(toggle).toHaveAttribute('data-overlay-current', 'activity');
+  await expect(cityCanvas).toHaveAttribute('data-overlay-mode', 'activity');
+  await transitTab.click();
+  await expect(toggle).toHaveAttribute('data-overlay-current', 'power');
+  await expect(transitTab).toHaveAttribute('aria-selected', 'true');
+  await expect(cityCanvas).toHaveAttribute('data-overlay-mode', 'power');
+  await transitTab.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(toggle).toHaveAttribute('data-overlay-current', 'economy');
+  await expect(cityCanvas).toHaveAttribute('data-overlay-mode', 'economy');
+  await page.keyboard.press('Home');
+  await expect(toggle).toHaveAttribute('data-overlay-current', 'activity');
 
   const taskTitle = `Smoke Task ${Date.now()}`;
   await page.getByPlaceholder('Enter a task for the swarm to execute...').fill(taskTitle);

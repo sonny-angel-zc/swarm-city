@@ -57,7 +57,10 @@ export default function Sidebar({ onClose }: { onClose?: () => void } = {}) {
   }, [autonomous.enabled, fetchAgentStatuses]);
 
   return (
-    <div className="w-80 bg-[var(--bg-panel)] border-l border-[var(--border-subtle)] text-[var(--text-primary)] flex flex-col overflow-hidden h-full">
+    <div
+      data-testid="dashboard-sidebar"
+      className="w-80 bg-[var(--bg-panel)] border-l border-[var(--border-subtle)] text-[var(--text-primary)] flex flex-col overflow-hidden h-full"
+    >
       {/* Mobile close button */}
       {onClose && (
         <div className="md:hidden flex items-center justify-between p-3 border-b border-[var(--border-subtle)]">

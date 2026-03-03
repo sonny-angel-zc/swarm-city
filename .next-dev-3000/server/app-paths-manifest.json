@@ -1,0 +1,7 @@
+{
+  "/api/autonomous/health/route": "app/api/autonomous/health/route.js",
+  "/api/usage/openai/route": "app/api/usage/openai/route.js",
+  "/api/autonomous/route": "app/api/autonomous/route.js",
+  "/api/agents/status/route": "app/api/agents/status/route.js",
+  "/page": "app/page.js"
+}

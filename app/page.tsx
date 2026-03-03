@@ -72,7 +72,7 @@ export default function Home() {
   }
 
   return (
-    <div className="h-[100dvh] flex flex-col">
+    <div data-testid="dashboard-theme-surface-root" className="h-[100dvh] flex flex-col">
       <ComponentErrorBoundary name="TopBar">
         <TopBar onToggleSidebar={() => setSidebarOpen(!sidebarOpen)} />
       </ComponentErrorBoundary>
@@ -92,9 +92,11 @@ export default function Home() {
           <ComponentErrorBoundary name="CityCanvas">
             <CityCanvas />
           </ComponentErrorBoundary>
-          <ComponentErrorBoundary name="Treasury">
-            <Treasury />
-          </ComponentErrorBoundary>
+          <div className="hidden md:block">
+            <ComponentErrorBoundary name="Treasury">
+              <Treasury />
+            </ComponentErrorBoundary>
+          </div>
           <ComponentErrorBoundary name="BacklogPanel">
             <BacklogPanel />
           </ComponentErrorBoundary>
@@ -104,12 +106,14 @@ export default function Home() {
           <ComponentErrorBoundary name="TaskInput">
             <TaskInput />
           </ComponentErrorBoundary>
-          <ComponentErrorBoundary name="BudgetPanel">
-            <BudgetPanel />
-          </ComponentErrorBoundary>
-          <ComponentErrorBoundary name="OverlayToggle">
-            <OverlayToggle />
-          </ComponentErrorBoundary>
+          <div className="hidden md:block">
+            <ComponentErrorBoundary name="BudgetPanel">
+              <BudgetPanel />
+            </ComponentErrorBoundary>
+            <ComponentErrorBoundary name="OverlayToggle">
+              <OverlayToggle />
+            </ComponentErrorBoundary>
+          </div>
         </div>
         {/* Desktop sidebar */}
         <div className="hidden md:flex">

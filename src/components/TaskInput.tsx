@@ -28,7 +28,7 @@ export default function TaskInput() {
   };
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 p-4">
+    <div data-testid="dashboard-task-input-floating" className="absolute bottom-0 left-0 right-0 p-4">
       <div className="max-w-2xl mx-auto">
         {/* Quick status */}
         {currentTask && currentTask.status !== 'done' && (
@@ -52,12 +52,13 @@ export default function TaskInput() {
           <div className="relative group">
             <input
               type="text"
+              data-testid="task-input-floating-field"
               value={input}
               onChange={e => setInput(e.target.value)}
               onFocus={() => setExpanded(true)}
               onBlur={() => !input && setExpanded(false)}
               placeholder="What should the swarm build?"
-              className="w-full bg-[var(--bg-panel)] backdrop-blur-xl border border-[var(--border-subtle)] group-hover:border-[var(--accent-primary)] rounded-xl px-5 py-3.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-all shadow-2xl shadow-black/50"
+              className="w-full bg-[var(--bg-panel)] backdrop-blur-xl border border-[var(--border-subtle)] group-hover:border-[var(--accent-primary)] rounded-xl px-5 py-3.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)] transition-all shadow-[0_25px_50px_-12px_var(--overlay-backdrop)]"
             />
             {input && (
               <button
