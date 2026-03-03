@@ -10,3 +10,4 @@ next-env.d.ts
 # Playwright outputs
 playwright-report/
 test-results/
+.next-dev-3000/
